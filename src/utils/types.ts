@@ -37,21 +37,50 @@ export interface PredictionResult {
 export type PredictionHorizon = 'short' | 'long';
 
 export interface WeekPrediction {
-  horizon: PredictionHorizon;  // 短期/长期
-  dates: string[];           // 未来交易日日期
-  bars: PredictedBar[];      // 预测K线
-  trendScore: number;        // 趋势评分 0-100
-  volatility: number;        // 预测波动率
-  quantWeight: number;       // 量化规律权重
-  marketHeat: number;        // 大盘热度
-  marketLabel: string;       // 大盘热度标签
-  summary: string;           // 预测摘要
-  buyPrice: number;          // 建议买入价位
-  sellPrice: number;         // 建议卖出价位
-  stopLossPrice: number;     // 止损价位
-  holdDays: number;          // 建议持仓天数
-  expectedReturn: number;    // 预期收益率%
-  riskLevel: 'low' | 'medium' | 'high'; // 风险等级
+  horizon: PredictionHorizon;
+  days: number;              // 5 或 20
+  currentPrice: number;
+  // 方向概率
+  upProbability: number;
+  downProbability: number;
+  flatProbability: number;
+  // 收益分布
+  expectedReturn: number;
+  ci80Lower: number;
+  ci80Upper: number;
+  ci95Lower: number;
+  ci95Upper: number;
+  // 可信度
+  score: number;
+  matchSampleSize: number;
+  weights: { technical: number; momentum: number; trend: number; pattern: number };
+  weightAccuracy: number;
+  backtest: {
+    totalSamples: number;
+    upHit: number; upMiss: number; downHit: number; downMiss: number; flatCount: number;
+    directionAccuracy: number;
+    meanError: number;
+    winRate: number;
+    wilsonLower: number;
+    horizons: { days: number; accuracy: number; sampleSize: number }[];
+  };
+  // 业务字段
+  buyPrice: number;
+  sellPrice: number;
+  stopLossPrice: number;
+  holdDays: number;
+  expectedReturnDisplay: number;
+  riskLevel: 'low' | 'medium' | 'high';
+  summary: string;
+  marketHeat: number;
+  marketLabel: string;
+  quantWeight: number;
+  method: string;
+  // 兼容旧字段
+  dates: string[];
+  bars: PredictedBar[];
+  trendScore: number;
+  volatility: number;
 }
 
 export interface PredictedBar {

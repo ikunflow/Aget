@@ -1,91 +1,96 @@
 import { useState, useEffect, useCallback } from 'react';
-import ReactECharts from 'echarts-for-react';
 import { useStockStore } from '@/store/useStockStore';
 import { useAuth } from '@/hooks/useAuth';
 import { usePredictions } from '@/hooks/usePredictions';
-import { fetchKline, fetchMarketHeat } from '@/utils/api';
+import { fetchKline } from '@/utils/api';
 import { calcAllIndicators } from '@/utils/indicators';
 import { predictHour, type HourPrediction } from '@/utils/hourPredictor';
-import type { DailyBar } from '@/utils/types';
-import { Search, Loader2, Clock, TrendingUp, TrendingDown, Activity, Zap, BarChart3, AlertCircle, CheckCircle2, Target, ShieldAlert, Database, History, Check, X } from 'lucide-react';
+import { Search, Loader2, Clock, TrendingUp, TrendingDown, Activity, Zap, BarChart3, AlertCircle, Database, History, Check, X, FlaskConical, Target, ShieldAlert } from 'lucide-react';
 
 export default function RealtimePredict() {
-  const { searchQuery, searchResults, setSearchQuery, selectStock, stockCode, stockName, bars, loading, useRealData } = useStockStore();
+  const { searchQuery, searchResults, setSearchQuery, selectStock, stockCode, stockName, loading } = useStockStore();
   const { user } = useAuth();
   const { records, loading: recordsLoading, savePrediction, resolvePending, stats } = usePredictions(user?.uid || null);
   const [hourPred, setHourPred] = useState<HourPrediction | null>(null);
   const [predicting, setPredicting] = useState(false);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(false);
-  const [refreshInterval, setRefreshInterval] = useState(60); // 秒
+  const [refreshInterval, setRefreshInterval] = useState(60);
 
-  // 当选中股票时,执行小时级预测
   const runPrediction = useCallback(async (code: string, name?: string) => {
     setPredicting(true);
     try {
-      const klineData = await fetchKline(code, 250);
-      if (klineData.bars.length < 20) return;
+      const klineData = await fetchKline(code, 730);
+      if (klineData.bars.length < 30) return;
       const bars = klineData.bars;
       const indicators = calcAllIndicators(bars);
-      const heat = await fetchMarketHeat().catch(() => ({ heat: 50, label: '温和' }));
-      // 注意: predictHour 现在接收 code 作为第一个参数(用于确定性种子)
-      const pred = predictHour(code, bars, indicators, heat.heat);
+      const pred = await predictHour(code, bars, indicators);
       setHourPred(pred);
       setLastUpdate(new Date());
-      // 保存到数据库(用最后一根K线的日期作为 baseDate)
       if (user) {
         const lastBar = bars[bars.length - 1];
-        await savePrediction(
-          pred,
-          code,
-          name || stockName || code,
-          lastBar.date,
-          lastBar.close
-        );
+        await savePredictionForCurrent(pred, code, name || stockName || code, lastBar.date, lastBar.close);
       }
     } catch (e) {
       console.error('小时预测失败:', e);
     } finally {
       setPredicting(false);
     }
-  }, [user, stockName, savePrediction]);
+  }, [user, stockName]);
 
-  // 监听选中股票
+  // 包装保存:由于数据库schema需要旧的方向字段,这里映射一下
+  const savePredictionForCurrent = useCallback(async (
+    pred: HourPrediction,
+    code: string,
+    name: string,
+    baseDate: string,
+    basePrice: number
+  ) => {
+    // 映射到旧schema,实际保存时主要用概率
+    const direction: 'up' | 'down' | 'flat' =
+      pred.upProbability > pred.downProbability + 0.05 ? 'up' :
+      pred.downProbability > pred.upProbability + 0.05 ? 'down' : 'flat';
+    const fakePred = {
+      ...pred,
+      // 兼容旧schema
+      predictedBars: [],
+      predictedClose: basePrice * (1 + pred.expectedReturn / 100),
+      direction,
+      expectedChange: pred.expectedReturn,
+      score: pred.score,
+      confidence: Math.max(pred.upProbability, pred.downProbability, pred.flatProbability),
+    } as any;
+    await savePrediction(fakePred, code, name, baseDate, basePrice);
+  }, [savePrediction]);
+
   useEffect(() => {
     if (stockCode && stockCode.length === 6) {
       runPrediction(stockCode, stockName);
     }
   }, [stockCode, stockName, runPrediction]);
 
-  // 自动刷新
   useEffect(() => {
     if (!autoRefresh || !stockCode) return;
     const timer = setInterval(() => runPrediction(stockCode, stockName), refreshInterval * 1000);
     return () => clearInterval(timer);
   }, [autoRefresh, stockCode, stockName, refreshInterval, runPrediction]);
 
-  // 进入页面时,自动回填未对比的预测(优先在后台执行,不阻塞UI)
   useEffect(() => {
     if (user && records.length > 0 && stats.resolved < stats.total) {
-      // 静默触发,不显示loading
       resolvePending().catch(() => {});
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
 
-  // K线图配置
-  const chartOption = hourPred ? buildChartOption(hourPred) : null;
-
   return (
     <div className="h-full flex flex-col gap-3 p-4 overflow-y-auto">
-      {/* 标题区 */}
       <div>
         <h2 className="text-white font-bold text-lg flex items-center gap-2">
           <Clock size={20} className="text-[#1e90ff]" />
-          实时小时级预测
+          概率分布预测
         </h2>
         <p className="text-[#4a6fa5] text-xs mt-0.5">
-          基于技术指标(RSI/MACD/布林带)+ 短期动量 + 趋势 + 历史模式,预测未来1小时(12个5分钟点)走势
+          基于网格搜索最优因子权重 + 全量历史模式匹配,输出方向概率与置信区间,附模型自身回测报告
         </p>
       </div>
 
@@ -116,7 +121,6 @@ export default function RealtimePredict() {
         )}
       </div>
 
-      {/* 当前选中 + 刷新控制 */}
       {stockCode && (
         <div className="flex items-center justify-between bg-[#0d1333]/60 border border-[#1e3a5f]/30 rounded-xl p-3">
           <div>
@@ -162,7 +166,6 @@ export default function RealtimePredict() {
         </div>
       )}
 
-      {/* 加载状态 */}
       {(predicting || (loading && !hourPred)) && (
         <div className="flex items-center justify-center py-12 gap-2 text-[#4a6fa5]">
           <Loader2 size={20} className="animate-spin text-[#00ff88]" />
@@ -170,94 +173,119 @@ export default function RealtimePredict() {
         </div>
       )}
 
-      {/* 预测结果 */}
       {hourPred && stockCode && (
         <>
-          {/* 评分 + 方向核心卡片 */}
+          {/* 方向概率条 */}
+          <ProbabilityBars pred={hourPred} />
+
+          {/* 核心数据卡片 */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <ScoreCard
-              icon={<Activity size={16} />}
-              label="综合评分"
-              value={hourPred.score.toString()}
-              hint={hourPred.score > 60 ? '偏多' : hourPred.score < 40 ? '偏空' : '震荡'}
-              color={hourPred.score > 60 ? '#ff4757' : hourPred.score < 40 ? '#00ff88' : '#ffd700'}
+            <StatCard
+              icon={<Target size={16} />}
+              label="期望收益"
+              value={`${hourPred.expectedReturn >= 0 ? '+' : ''}${hourPred.expectedReturn.toFixed(2)}%`}
+              hint="基于历史相似样本"
+              color={hourPred.expectedReturn > 0 ? '#ff4757' : hourPred.expectedReturn < 0 ? '#00ff88' : '#4a6fa5'}
             />
-            <ScoreCard
-              icon={hourPred.direction === 'up' ? <TrendingUp size={16} /> : hourPred.direction === 'down' ? <TrendingDown size={16} /> : <Activity size={16} />}
-              label="1小时预期"
-              value={`${hourPred.expectedChange >= 0 ? '+' : ''}${hourPred.expectedChange.toFixed(2)}%`}
-              hint={hourPred.direction === 'up' ? '看涨' : hourPred.direction === 'down' ? '看跌' : '震荡'}
-              color={hourPred.expectedChange > 0 ? '#ff4757' : hourPred.expectedChange < 0 ? '#00ff88' : '#4a6fa5'}
-            />
-            <ScoreCard
+            <StatCard
               icon={<BarChart3 size={16} />}
-              label="置信度"
-              value={`${(hourPred.confidence * 100).toFixed(0)}%`}
-              hint={hourPred.confidence > 0.7 ? '高' : hourPred.confidence > 0.5 ? '中' : '低'}
+              label="80%置信区间"
+              value={`[${hourPred.ci80Lower.toFixed(1)}%, ${hourPred.ci80Upper.toFixed(1)}%]`}
+              hint="10%-90%分位数"
               color="#1e90ff"
             />
-            <ScoreCard
-              icon={<Target size={16} />}
-              label="目标价"
-              value={hourPred.predictedClose.toFixed(2)}
-              hint="1小时预测"
-              color="#ffd700"
+            <StatCard
+              icon={<FlaskConical size={16} />}
+              label="匹配样本数"
+              value={hourPred.matchSampleSize.toString()}
+              hint={hourPred.matchSampleSize >= 30 ? '充足' : hourPred.matchSampleSize >= 10 ? '一般' : '不足'}
+              color={hourPred.matchSampleSize >= 30 ? '#00ff88' : '#ffd700'}
+            />
+            <StatCard
+              icon={<Database size={16} />}
+              label="模型回测准确率"
+              value={`${(hourPred.backtest.directionAccuracy * 100).toFixed(1)}%`}
+              hint={`样本${hourPred.backtest.totalSamples}`}
+              color={hourPred.backtest.directionAccuracy > 0.55 ? '#ff4757' : hourPred.backtest.directionAccuracy > 0.45 ? '#ffd700' : '#00ff88'}
             />
           </div>
 
-          {/* 预测K线图 */}
+          {/* 95%置信区间图 */}
           <div className="bg-[#0d1333]/60 border border-[#1e3a5f]/30 rounded-xl p-3">
-            <div className="flex items-center justify-between mb-2">
-              <h3 className="text-white text-sm font-bold">未来1小时(5分钟K线)预测</h3>
-              <span className="text-[#4a6fa5] text-xs">共 {hourPred.predictedBars.length} 个5分钟点</span>
-            </div>
-            <ReactECharts
-              option={chartOption!}
-              style={{ height: 320 }}
-              notMerge={true}
-              lazyUpdate={true}
-              theme="dark"
-            />
+            <h3 className="text-white text-sm font-bold mb-3 flex items-center gap-1.5">
+              <Activity size={14} className="text-[#1e90ff]" />
+              95%置信区间(收益分布)
+            </h3>
+            <CI95Bar pred={hourPred} />
           </div>
 
-          {/* 5维度评分 + 买卖建议 */}
+          {/* 因子得分 + 权重 */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            {/* 评分维度 */}
             <div className="bg-[#0d1333]/60 border border-[#1e3a5f]/30 rounded-xl p-3">
               <h3 className="text-white text-sm font-bold mb-3 flex items-center gap-1.5">
                 <BarChart3 size={14} className="text-[#1e90ff]" />
-                预测因子评分
+                因子得分与权重
               </h3>
               <div className="space-y-2">
-                <FactorBar label="技术指标 (RSI/MACD/布林)" score={hourPred.factors.technical} weight="35%" />
-                <FactorBar label="短期动量" score={hourPred.factors.momentum} weight="25%" />
-                <FactorBar label="趋势强度 (MA20)" score={hourPred.factors.trend} weight="20%" />
-                <FactorBar label="历史模式匹配" score={hourPred.factors.pattern} weight="20%" />
+                <FactorBar label="技术指标" score={hourPred.factors.technical} weight={hourPred.weights.technical} />
+                <FactorBar label="短期动量" score={hourPred.factors.momentum} weight={hourPred.weights.momentum} />
+                <FactorBar label="趋势强度" score={hourPred.factors.trend} weight={hourPred.weights.trend} />
+                <FactorBar label="历史模式" score={hourPred.factors.pattern} weight={hourPred.weights.pattern} />
               </div>
+              {hourPred.weightAccuracy > 0 && (
+                <p className="text-[10px] text-[#4a6fa5] mt-2 pt-2 border-t border-[#1e3a5f]/20">
+                  该权重在历史样本外准确率: <span className="text-white/80">{(hourPred.weightAccuracy * 100).toFixed(1)}%</span>
+                </p>
+              )}
             </div>
 
-            {/* 操作建议 */}
+            {/* 模型自身回测 */}
             <div className="bg-[#0d1333]/60 border border-[#1e3a5f]/30 rounded-xl p-3">
               <h3 className="text-white text-sm font-bold mb-3 flex items-center gap-1.5">
-                {hourPred.direction === 'up' ? <TrendingUp size={14} className="text-[#ff4757]" /> : hourPred.direction === 'down' ? <TrendingDown size={14} className="text-[#00ff88]" /> : <Activity size={14} className="text-[#ffd700]" />}
-                操作建议
+                <FlaskConical size={14} className="text-[#ffd700]" />
+                模型自身回测(过去250个交易日)
               </h3>
-              <AdviceBlock pred={hourPred} />
+              <BacktestTable pred={hourPred} />
             </div>
           </div>
 
-          {/* 预测方法说明 */}
+          {/* 多周期对比 */}
+          {hourPred.backtest.horizons.length > 0 && (
+            <div className="bg-[#0d1333]/60 border border-[#1e3a5f]/30 rounded-xl p-3">
+              <h3 className="text-white text-sm font-bold mb-3 flex items-center gap-1.5">
+                <BarChart3 size={14} className="text-[#1e90ff]" />
+                不同周期方向预测准确率对比
+              </h3>
+              <div className="grid grid-cols-3 gap-2">
+                {hourPred.backtest.horizons.map(h => (
+                  <div key={h.days} className="bg-[#0a0e27]/60 rounded-lg p-3 text-center">
+                    <div className="text-[#4a6fa5] text-xs">未来{h.days}日</div>
+                    <div className="font-mono font-bold text-lg mt-1" style={{
+                      color: h.accuracy > 0.55 ? '#ff4757' : h.accuracy > 0.45 ? '#ffd700' : '#00ff88'
+                    }}>
+                      {(h.accuracy * 100).toFixed(1)}%
+                    </div>
+                    <div className="text-[10px] text-[#4a6fa5] mt-0.5">样本{h.sampleSize}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* 操作建议(基于概率结果) */}
+          <AdviceSection pred={hourPred} />
+
+          {/* 方法说明 */}
           <div className="bg-[#0d1333]/40 border border-[#1e3a5f]/20 rounded-xl p-3 text-xs text-[#4a6fa5]">
             <p className="flex items-start gap-1.5">
               <AlertCircle size={12} className="mt-0.5 shrink-0" />
               <span>
-                <strong className="text-white/80">预测方法:</strong> {hourPred.method}。
-                小时级预测基于日线数据推断,实际盘中走势受消息面、买卖盘、资金流等多重因素影响,本预测仅供参考,不构成投资建议。
+                <strong className="text-white/80">方法:</strong> {hourPred.method}。
+                <strong className="text-white/80"> 重要提示:</strong> 即使模型自身回测准确率{'>'}50%,也仅意味着统计上略优于随机,远不能保证未来收益。实际投资请以风控为先。
               </span>
             </p>
           </div>
 
-          {/* 历史准确率统计 */}
           {user && (
             <AccuracyPanel
               records={records}
@@ -271,16 +299,14 @@ export default function RealtimePredict() {
         </>
       )}
 
-      {/* 空状态 */}
       {!stockCode && !predicting && (
         <div className="flex-1 flex items-center justify-center min-h-[400px]">
           <div className="text-center space-y-3 max-w-sm">
             <Clock size={48} className="text-[#1e3a5f] mx-auto" />
-            <h3 className="text-white/80 text-base font-bold">选择股票开始小时级预测</h3>
+            <h3 className="text-white/80 text-base font-bold">选择股票开始预测</h3>
             <p className="text-[#4a6fa5] text-sm leading-relaxed">
-              基于技术指标、动量、趋势和历史模式,预测未来1小时(12个5分钟点)的可能走势、关键支撑压力位和操作建议。
+              系统会基于该股票3年历史K线,自动搜索最优因子权重,并在全量历史数据中匹配相似模式,输出方向概率、收益分布与置信区间。
             </p>
-            <p className="text-[#4a6fa5] text-xs">支持A股、ETF、LOF、QDII等场内基金</p>
           </div>
         </div>
       )}
@@ -288,52 +314,223 @@ export default function RealtimePredict() {
   );
 }
 
-// 评分卡
-function ScoreCard({ icon, label, value, hint, color }: { icon: React.ReactNode; label: string; value: string; hint: string; color: string }) {
+// 方向概率条
+function ProbabilityBars({ pred }: { pred: HourPrediction }) {
+  const up = (pred.upProbability * 100).toFixed(1);
+  const down = (pred.downProbability * 100).toFixed(1);
+  const flat = (pred.flatProbability * 100).toFixed(1);
   return (
     <div className="bg-[#0d1333]/60 border border-[#1e3a5f]/30 rounded-xl p-3">
-      <div className="flex items-center gap-1.5 text-[#4a6fa5] text-xs">
-        {icon}
-        <span>{label}</span>
+      <div className="flex items-center justify-between mb-2">
+        <h3 className="text-white text-sm font-bold flex items-center gap-1.5">
+          {pred.upProbability > pred.downProbability ? <TrendingUp size={14} className="text-[#ff4757]" /> : pred.downProbability > pred.upProbability ? <TrendingDown size={14} className="text-[#00ff88]" /> : <Activity size={14} className="text-[#ffd700]" />}
+          方向概率分布(未来5日)
+        </h3>
       </div>
+      <div className="space-y-2">
+        <ProbRow label="上涨" value={Number(up)} color="#ff4757" icon={<TrendingUp size={12} />} />
+        <ProbRow label="下跌" value={Number(down)} color="#00ff88" icon={<TrendingDown size={12} />} />
+        <ProbRow label="震荡" value={Number(flat)} color="#ffd700" icon={<Activity size={12} />} />
+      </div>
+    </div>
+  );
+}
+
+function ProbRow({ label, value, color, icon }: { label: string; value: number; color: string; icon: React.ReactNode }) {
+  return (
+    <div>
+      <div className="flex items-center justify-between text-xs mb-1">
+        <span className="flex items-center gap-1" style={{ color }}>{icon}{label}</span>
+        <span className="font-mono font-bold" style={{ color }}>{value.toFixed(1)}%</span>
+      </div>
+      <div className="h-2 bg-[#0a0e27] rounded-full overflow-hidden">
+        <div className="h-full rounded-full transition-all" style={{ width: `${value}%`, background: color }} />
+      </div>
+    </div>
+  );
+}
+
+// 95%置信区间条形图
+function CI95Bar({ pred }: { pred: HourPrediction }) {
+  const { ci95Lower, ci95Upper, expectedReturn } = pred;
+  // 范围归一化到 -10% ~ +10% 区间
+  const range = 10;
+  const min = -range, max = range;
+  const total = max - min;
+  const zeroX = ((0 - min) / total) * 100;
+  const lowerX = Math.max(0, Math.min(100, ((ci95Lower - min) / total) * 100));
+  const upperX = Math.max(0, Math.min(100, ((ci95Upper - min) / total) * 100));
+  const expectedX = Math.max(0, Math.min(100, ((expectedReturn - min) / total) * 100));
+  return (
+    <div>
+      <div className="relative h-8 mt-2">
+        {/* 0线 */}
+        <div className="absolute top-0 bottom-0 w-px bg-[#4a6fa5]" style={{ left: `${zeroX}%` }} />
+        {/* 95%区间 */}
+        <div
+          className="absolute top-2 bottom-2 rounded"
+          style={{
+            left: `${lowerX}%`,
+            width: `${upperX - lowerX}%`,
+            background: ci95Upper > 0 && ci95Lower < 0
+              ? 'linear-gradient(to right, #00ff8833 0%, #00ff8833 50%, #ff475733 50%, #ff475733 100%)'
+              : ci95Upper <= 0 ? '#00ff8833' : '#ff475733'
+          }}
+        />
+        {/* 期望值点 */}
+        <div
+          className="absolute top-0 bottom-0 w-1 rounded"
+          style={{ left: `${expectedX}%`, background: '#ffd700' }}
+        />
+        {/* 标签 */}
+        <div className="absolute -top-1 text-[10px] text-[#00ff88] font-mono" style={{ left: `${lowerX}%`, transform: 'translateX(-50%)' }}>
+          {ci95Lower.toFixed(1)}%
+        </div>
+        <div className="absolute -top-1 text-[10px] text-[#ff4757] font-mono" style={{ left: `${upperX}%`, transform: 'translateX(-50%)' }}>
+          {ci95Upper.toFixed(1)}%
+        </div>
+      </div>
+      <div className="flex justify-between text-[10px] text-[#4a6fa5] mt-1">
+        <span>-10%</span>
+        <span>0%</span>
+        <span>+10%</span>
+      </div>
+      <p className="text-[10px] text-[#4a6fa5] mt-2">
+        <span className="inline-block w-2 h-2 bg-[#ffd700] rounded-sm mr-1" />黄线:期望收益
+        <span className="inline-block w-3 h-2 mx-1" style={{ background: '#00ff8833' }} />阴影:95%置信区间
+      </p>
+    </div>
+  );
+}
+
+function StatCard({ icon, label, value, hint, color }: { icon: React.ReactNode; label: string; value: string; hint: string; color: string }) {
+  return (
+    <div className="bg-[#0d1333]/60 border border-[#1e3a5f]/30 rounded-xl p-3">
+      <div className="flex items-center gap-1.5 text-[#4a6fa5] text-xs">{icon}<span>{label}</span></div>
       <div className="mt-1.5 font-mono font-bold text-lg" style={{ color }}>{value}</div>
       <div className="text-xs mt-0.5" style={{ color }}>{hint}</div>
     </div>
   );
 }
 
-// 因子进度条
-function FactorBar({ label, score, weight }: { label: string; score: number; weight: string }) {
+function FactorBar({ label, score, weight }: { label: string; score: number; weight: number }) {
   const color = score > 60 ? '#ff4757' : score < 40 ? '#00ff88' : '#ffd700';
   return (
     <div>
       <div className="flex items-center justify-between text-xs mb-1">
         <span className="text-[#4a6fa5]">{label}</span>
         <div className="flex items-center gap-2">
-          <span className="text-[#4a6fa5] text-[10px]">{weight}</span>
+          <span className="text-[#4a6fa5] text-[10px]">权重{(weight * 100).toFixed(0)}%</span>
           <span className="font-mono font-bold" style={{ color }}>{score}</span>
         </div>
       </div>
       <div className="h-1.5 bg-[#0a0e27] rounded-full overflow-hidden">
-        <div
-          className="h-full rounded-full transition-all"
-          style={{ width: `${score}%`, background: color }}
-        />
+        <div className="h-full rounded-full transition-all" style={{ width: `${score}%`, background: color }} />
       </div>
     </div>
   );
 }
 
-// 准确率统计面板
+function BacktestTable({ pred }: { pred: HourPrediction }) {
+  const bt = pred.backtest;
+  const accuracyColor = bt.directionAccuracy > 0.55 ? '#ff4757' : bt.directionAccuracy > 0.45 ? '#ffd700' : '#00ff88';
+  return (
+    <div className="space-y-2 text-xs">
+      <div className="grid grid-cols-2 gap-2">
+        <div className="bg-[#0a0e27]/60 rounded p-2">
+          <div className="text-[#4a6fa5]">方向命中率</div>
+          <div className="font-mono font-bold text-base" style={{ color: accuracyColor }}>{(bt.directionAccuracy * 100).toFixed(1)}%</div>
+        </div>
+        <div className="bg-[#0a0e27]/60 rounded p-2">
+          <div className="text-[#4a6fa5]">Wilson下界(95%置信)</div>
+          <div className="font-mono font-bold text-base" style={{ color: bt.wilsonLower > 0.5 ? '#ff4757' : '#00ff88' }}>{(bt.wilsonLower * 100).toFixed(1)}%</div>
+        </div>
+      </div>
+      <div className="grid grid-cols-4 gap-1 text-center">
+        <div className="bg-[#0a0e27]/40 rounded p-1.5">
+          <div className="text-[#4a6fa5] text-[10px]">看涨命中</div>
+          <div className="font-mono text-[#ff4757] font-bold">{bt.upHit}</div>
+        </div>
+        <div className="bg-[#0a0e27]/40 rounded p-1.5">
+          <div className="text-[#4a6fa5] text-[10px]">看涨失误</div>
+          <div className="font-mono text-[#00ff88] font-bold">{bt.upMiss}</div>
+        </div>
+        <div className="bg-[#0a0e27]/40 rounded p-1.5">
+          <div className="text-[#4a6fa5] text-[10px]">看跌命中</div>
+          <div className="font-mono text-[#00ff88] font-bold">{bt.downHit}</div>
+        </div>
+        <div className="bg-[#0a0e27]/40 rounded p-1.5">
+          <div className="text-[#4a6fa5] text-[10px]">看跌失误</div>
+          <div className="font-mono text-[#ff4757] font-bold">{bt.downMiss}</div>
+        </div>
+      </div>
+      <p className="text-[10px] text-[#4a6fa5] pt-1 border-t border-[#1e3a5f]/20">
+        Wilson下界 {">"} 50% 时,模型在95%置信度下优于随机预测
+      </p>
+    </div>
+  );
+}
+
+function AdviceSection({ pred }: { pred: HourPrediction }) {
+  const direction = pred.upProbability > pred.downProbability + 0.05 ? 'up' :
+                    pred.downProbability > pred.upProbability + 0.05 ? 'down' : 'flat';
+  const mainProb = Math.round(Math.max(pred.upProbability, pred.downProbability, pred.flatProbability) * 100);
+  return (
+    <div className="bg-[#0d1333]/60 border border-[#1e3a5f]/30 rounded-xl p-3">
+      <h3 className="text-white text-sm font-bold mb-3 flex items-center gap-1.5">
+        {direction === 'up' ? <TrendingUp size={14} className="text-[#ff4757]" /> : direction === 'down' ? <TrendingDown size={14} className="text-[#00ff88]" /> : <Activity size={14} className="text-[#ffd700]" />}
+        概率化操作建议
+      </h3>
+      <div className="space-y-2 text-sm">
+        {direction === 'up' && (
+          <div className="flex items-start gap-2">
+            <Target size={14} className="text-[#ff4757] mt-0.5 shrink-0" />
+            <div>
+              <div className="text-white/90 font-bold">上涨概率 {mainProb}%,期望收益 {pred.expectedReturn >= 0 ? '+' : ''}{pred.expectedReturn.toFixed(2)}%</div>
+              <div className="text-[#4a6fa5] text-xs mt-0.5">80%置信下沿 {pred.ci80Lower.toFixed(2)}% 作为保守止损参考</div>
+            </div>
+          </div>
+        )}
+        {direction === 'down' && (
+          <div className="flex items-start gap-2">
+            <ShieldAlert size={14} className="text-[#00ff88] mt-0.5 shrink-0" />
+            <div>
+              <div className="text-white/90 font-bold">下跌概率 {mainProb}%,期望收益 {pred.expectedReturn.toFixed(2)}%</div>
+              <div className="text-[#4a6fa5] text-xs mt-0.5">已持有者关注下方 {pred.ci95Lower.toFixed(1)}% 区间</div>
+            </div>
+          </div>
+        )}
+        {direction === 'flat' && (
+          <div className="flex items-start gap-2">
+            <Activity size={14} className="text-[#ffd700] mt-0.5 shrink-0" />
+            <div>
+              <div className="text-white/90 font-bold">方向不明,震荡概率 {mainProb}%</div>
+              <div className="text-[#4a6fa5] text-xs mt-0.5">95%置信区间 [{pred.ci95Lower.toFixed(1)}%, {pred.ci95Upper.toFixed(1)}%],建议观望</div>
+            </div>
+          </div>
+        )}
+        <div className="grid grid-cols-3 gap-2 pt-2 border-t border-[#1e3a5f]/20 text-xs">
+          <div>
+            <div className="text-[#4a6fa5]">期望收益</div>
+            <div className="font-mono" style={{ color: pred.expectedReturn >= 0 ? '#ff4757' : '#00ff88' }}>{pred.expectedReturn >= 0 ? '+' : ''}{pred.expectedReturn.toFixed(2)}%</div>
+          </div>
+          <div>
+            <div className="text-[#4a6fa5]">80%区间下沿</div>
+            <div className="font-mono text-[#00ff88]">{pred.ci80Lower.toFixed(2)}%</div>
+          </div>
+          <div>
+            <div className="text-[#4a6fa5]">95%区间下沿</div>
+            <div className="font-mono text-[#ff4757]">{pred.ci95Lower.toFixed(2)}%</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AccuracyPanel({ records, stats, loading, currentCode, currentName, onResolve }: {
-  records: import('@/hooks/usePredictions').PredictionRecord[];
-  stats: {
-    total: number;
-    resolved: number;
-    correct: number;
-    incorrect: number;
-    accuracy: number | null;
-  };
+  records: any[];
+  stats: any;
   loading: boolean;
   currentCode: string;
   currentName: string;
@@ -343,23 +540,17 @@ function AccuracyPanel({ records, stats, loading, currentCode, currentName, onRe
   const [resolving, setResolving] = useState(false);
   const accuracyColor = stats.accuracy === null
     ? '#4a6fa5'
-    : stats.accuracy >= 0.6
-    ? '#ff4757'
-    : stats.accuracy >= 0.4
-    ? '#ffd700'
-    : '#00ff88';
+    : stats.accuracy >= 0.6 ? '#ff4757'
+    : stats.accuracy >= 0.4 ? '#ffd700' : '#00ff88';
 
-  // 当前股票的最近记录
-  const currentStockRecords = records.filter(r => r.code === currentCode);
-  // 显示最近5条或全部
-  const displayRecords = (showAll ? records : records.slice(0, 5));
+  const displayRecords = showAll ? records : records.slice(0, 5);
 
   return (
     <div className="bg-[#0d1333]/60 border border-[#1e3a5f]/30 rounded-xl p-3">
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-white text-sm font-bold flex items-center gap-1.5">
           <Database size={14} className="text-[#ffd700]" />
-          预测准确率统计
+          历史预测对比
         </h3>
         <button
           onClick={async () => {
@@ -377,12 +568,9 @@ function AccuracyPanel({ records, stats, loading, currentCode, currentName, onRe
       {loading ? (
         <div className="py-4 text-center text-[#4a6fa5] text-xs">加载中...</div>
       ) : records.length === 0 ? (
-        <div className="py-4 text-center text-[#4a6fa5] text-xs">
-          暂无历史预测。选择股票后会自动保存预测,1天后系统会自动对比实际收盘价。
-        </div>
+        <div className="py-4 text-center text-[#4a6fa5] text-xs">暂无历史预测。</div>
       ) : (
         <>
-          {/* 核心统计卡片 */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3">
             <div className="bg-[#0a0e27]/60 rounded-lg p-2.5">
               <div className="text-[#4a6fa5] text-[10px] uppercase tracking-wider">总预测数</div>
@@ -408,20 +596,6 @@ function AccuracyPanel({ records, stats, loading, currentCode, currentName, onRe
             </div>
           </div>
 
-          {/* 当前股票统计 */}
-          {currentStockRecords.length > 0 && (
-            <div className="text-xs text-[#4a6fa5] mb-2">
-              <span className="text-white/80">{currentName || currentCode}</span>
-              {' '}已记录 <span className="text-white/90 font-mono">{currentStockRecords.length}</span> 次预测
-              {currentStockRecords.some(r => r.resolved) && (
-                <>
-                  ,其中命中 <span className="text-[#ff4757] font-mono">{currentStockRecords.filter(r => r.isCorrect).length}</span> 次
-                </>
-              )}
-            </div>
-          )}
-
-          {/* 历史记录表 */}
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
               <thead>
@@ -434,7 +608,7 @@ function AccuracyPanel({ records, stats, loading, currentCode, currentName, onRe
                 </tr>
               </thead>
               <tbody>
-                {displayRecords.map((r) => {
+                {displayRecords.map((r: any) => {
                   const result = !r.resolved
                     ? <span className="text-[#4a6fa5]">待对比</span>
                     : r.isCorrect === true
@@ -443,26 +617,12 @@ function AccuracyPanel({ records, stats, loading, currentCode, currentName, onRe
                     ? <span className="text-[#00ff88] flex items-center justify-end gap-0.5"><X size={10} />失误</span>
                     : <span className="text-[#ffd700]">震荡</span>;
                   return (
-                    <tr key={r.id} className="border-b border-[#1e3a5f]/15 hover:bg-[#1e3a5f]/10">
+                    <tr key={r.id} className="border-b border-[#1e3a5f]/15">
                       <td className="py-1.5 text-white/80 font-mono">{r.code}</td>
                       <td className="py-1.5 text-[#4a6fa5]">{r.baseDate}</td>
-                      <td className="py-1.5 text-right font-mono text-white/80">
-                        {r.predictedClose.toFixed(2)}
-                        <div className="text-[10px]" style={{ color: r.predictedChange >= 0 ? '#ff4757' : '#00ff88' }}>
-                          {r.predictedChange >= 0 ? '+' : ''}{r.predictedChange.toFixed(2)}%
-                        </div>
-                      </td>
+                      <td className="py-1.5 text-right font-mono text-white/80">{r.predictedClose.toFixed(2)}</td>
                       <td className="py-1.5 text-right font-mono">
-                        {r.actualClose !== null ? (
-                          <>
-                            <span className="text-white/80">{r.actualClose.toFixed(2)}</span>
-                            <div className="text-[10px]" style={{ color: (r.actualChange || 0) >= 0 ? '#ff4757' : '#00ff88' }}>
-                              {(r.actualChange || 0) >= 0 ? '+' : ''}{(r.actualChange || 0).toFixed(2)}%
-                            </div>
-                          </>
-                        ) : (
-                          <span className="text-[#4a6fa5]">--</span>
-                        )}
+                        {r.actualClose !== null ? <span className="text-white/80">{r.actualClose.toFixed(2)}</span> : <span className="text-[#4a6fa5]">--</span>}
                       </td>
                       <td className="py-1.5 text-right">{result}</td>
                     </tr>
@@ -483,182 +643,4 @@ function AccuracyPanel({ records, stats, loading, currentCode, currentName, onRe
       )}
     </div>
   );
-}
-
-// 操作建议
-function AdviceBlock({ pred }: { pred: HourPrediction }) {
-  // 计算关键位
-  const allHighs = pred.predictedBars.map(b => b.high);
-  const allLows = pred.predictedBars.map(b => b.low);
-  const resistance = Math.max(...allHighs);
-  const support = Math.min(...allLows);
-  const predictedClose = pred.predictedClose;
-
-  if (pred.direction === 'up') {
-    return (
-      <div className="space-y-2 text-sm">
-        <div className="flex items-start gap-2">
-          <CheckCircle2 size={14} className="text-[#ff4757] mt-0.5 shrink-0" />
-          <div>
-            <div className="text-white/90 font-bold">短线偏多,可在回调时小仓位介入</div>
-            <div className="text-[#4a6fa5] text-xs mt-0.5">建议快进快出,设置好止盈位</div>
-          </div>
-        </div>
-        <div className="grid grid-cols-2 gap-2 pt-2 border-t border-[#1e3a5f]/20">
-          <div>
-            <div className="text-[#4a6fa5] text-xs">短线压力</div>
-            <div className="font-mono text-[#ff4757] font-bold">{resistance.toFixed(2)}</div>
-          </div>
-          <div>
-            <div className="text-[#4a6fa5] text-xs">短线支撑</div>
-            <div className="font-mono text-[#00ff88] font-bold">{support.toFixed(2)}</div>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  if (pred.direction === 'down') {
-    return (
-      <div className="space-y-2 text-sm">
-        <div className="flex items-start gap-2">
-          <ShieldAlert size={14} className="text-[#00ff88] mt-0.5 shrink-0" />
-          <div>
-            <div className="text-white/90 font-bold">短线偏空,建议观望或减仓</div>
-            <div className="text-[#4a6fa5] text-xs mt-0.5">已持有者关注下方支撑是否破位</div>
-          </div>
-        </div>
-        <div className="grid grid-cols-2 gap-2 pt-2 border-t border-[#1e3a5f]/20">
-          <div>
-            <div className="text-[#4a6fa5] text-xs">关键阻力</div>
-            <div className="font-mono text-[#ff4757] font-bold">{resistance.toFixed(2)}</div>
-          </div>
-          <div>
-            <div className="text-[#4a6fa5] text-xs">关键支撑</div>
-            <div className="font-mono text-[#00ff88] font-bold">{support.toFixed(2)}</div>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-2 text-sm">
-      <div className="flex items-start gap-2">
-        <Activity size={14} className="text-[#ffd700] mt-0.5 shrink-0" />
-        <div>
-          <div className="text-white/90 font-bold">区间震荡,高抛低吸</div>
-          <div className="text-[#4a6fa5] text-xs mt-0.5">在支撑位附近关注企稳信号,阻力位附近考虑减仓</div>
-        </div>
-      </div>
-      <div className="grid grid-cols-2 gap-2 pt-2 border-t border-[#1e3a5f]/20">
-        <div>
-          <div className="text-[#4a6fa5] text-xs">震荡上沿</div>
-          <div className="font-mono text-[#ff4757] font-bold">{resistance.toFixed(2)}</div>
-        </div>
-        <div>
-          <div className="text-[#4a6fa5] text-xs">震荡下沿</div>
-          <div className="font-mono text-[#00ff88] font-bold">{support.toFixed(2)}</div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// K线图配置
-function buildChartOption(pred: HourPrediction) {
-  const dates = pred.predictedBars.map(b => b.time);
-  const ohlc = pred.predictedBars.map(b => [b.open, b.close, b.low, b.high]);
-  const volumes = pred.predictedBars.map((b, i) => ({
-    value: b.volume,
-    itemStyle: { color: b.close >= b.open ? '#ff4757' : '#00ff88' },
-  }));
-
-  return {
-    backgroundColor: 'transparent',
-    animation: true,
-    legend: {
-      data: ['预测K线', '成交量'],
-      textStyle: { color: '#4a6fa5', fontSize: 11 },
-      top: 4,
-    },
-    tooltip: {
-      trigger: 'axis',
-      axisPointer: { type: 'cross' },
-      backgroundColor: 'rgba(13, 19, 51, 0.95)',
-      borderColor: '#1e3a5f',
-      textStyle: { color: '#fff', fontSize: 11 },
-    },
-    axisPointer: { link: [{ xAxisIndex: 'all' }] },
-    grid: [
-      { left: 50, right: 20, top: 36, height: '60%' },
-      { left: 50, right: 20, top: '76%', height: '16%' },
-    ],
-    xAxis: [
-      {
-        type: 'category',
-        data: dates,
-        boundaryGap: false,
-        axisLine: { lineStyle: { color: '#1e3a5f' } },
-        axisLabel: { color: '#4a6fa5', fontSize: 10 },
-        splitLine: { show: false },
-      },
-      {
-        type: 'category',
-        gridIndex: 1,
-        data: dates,
-        axisLine: { lineStyle: { color: '#1e3a5f' } },
-        axisLabel: { show: false },
-      },
-    ],
-    yAxis: [
-      {
-        scale: true,
-        axisLine: { lineStyle: { color: '#1e3a5f' } },
-        axisLabel: { color: '#4a6fa5', fontSize: 10 },
-        splitLine: { lineStyle: { color: '#1e3a5f', opacity: 0.2 } },
-      },
-      {
-        gridIndex: 1,
-        axisLine: { lineStyle: { color: '#1e3a5f' } },
-        axisLabel: { show: false },
-        splitNumber: 2,
-      },
-    ],
-    dataZoom: [
-      { type: 'inside', xAxisIndex: [0, 1], start: 0, end: 100 },
-    ],
-    series: [
-      {
-        name: '预测K线',
-        type: 'candlestick',
-        data: ohlc,
-        itemStyle: {
-          color: '#ff4757',       // 阳线红
-          color0: '#00ff88',      // 阴线绿
-          borderColor: '#ff4757',
-          borderColor0: '#00ff88',
-        },
-        markLine: {
-          silent: true,
-          symbol: 'none',
-          lineStyle: { color: '#ffd700', type: 'dashed', width: 1 },
-          label: { color: '#ffd700', fontSize: 10 },
-          data: [
-            {
-              yAxis: pred.predictedClose,
-              name: `目标价 ${pred.predictedClose.toFixed(2)}`,
-            },
-          ],
-        },
-      },
-      {
-        name: '成交量',
-        type: 'bar',
-        xAxisIndex: 1,
-        yAxisIndex: 1,
-        data: volumes,
-      },
-    ],
-  };
 }

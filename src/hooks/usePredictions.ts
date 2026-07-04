@@ -69,7 +69,7 @@ export function usePredictions(userId: string | null) {
 
   // 保存新预测到数据库(使用 baseDate+code+predictedAt 作为幂等键避免重复)
   const savePrediction = useCallback(async (
-    pred: HourPrediction,
+    pred: any,
     code: string,
     name: string,
     baseDate: string,
