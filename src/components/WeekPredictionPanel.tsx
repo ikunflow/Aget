@@ -1,7 +1,6 @@
 import { useMemo } from 'react';
-import ReactECharts from 'echarts-for-react';
 import type { WeekPrediction, DailyBar, PredictionHorizon } from '@/utils/types';
-import { TrendingUp, Target, Shield, Calendar, Coins, Zap } from 'lucide-react';
+import { TrendingUp, TrendingDown, Activity, Target, Shield, Calendar, Coins, Zap, BarChart3, FlaskConical, AlertCircle } from 'lucide-react';
 
 interface Props {
   prediction: WeekPrediction | null;
@@ -12,144 +11,80 @@ interface Props {
 }
 
 export default function WeekPredictionPanel({ prediction, historicalBars, latestDate, horizon, onHorizonChange }: Props) {
-  if (!prediction || prediction.bars.length === 0) {
+  if (!prediction || historicalBars.length < 30) {
     return (
       <div className="space-y-3">
         <HorizonSwitch horizon={horizon} onHorizonChange={onHorizonChange} />
-        <p className="text-[#4a6fa5] text-xs text-center py-4">数据不足，无法预测</p>
+        <div className="bg-[#0d1333]/60 border border-[#1e3a5f]/30 rounded-xl p-4 text-center">
+          <AlertCircle size={24} className="text-[#ffd700] mx-auto mb-2" />
+          <p className="text-[#4a6fa5] text-xs">K线数据不足(需要至少30个交易日)</p>
+        </div>
       </div>
     );
   }
 
-  const chartOption = useMemo(() => {
-    const histLen = horizon === 'short' ? 20 : 40;
-    const recentBars = historicalBars.slice(-histLen);
-    const allBars = [...recentBars, ...prediction.bars];
-    const histEnd = recentBars.length;
-
-    const dates = allBars.map(b => b.date);
-    const opens = allBars.map(b => b.open);
-    const closes = allBars.map(b => b.close);
-    const lows = allBars.map(b => b.low);
-    const highs = allBars.map(b => b.high);
-    const klineData = allBars.map((b, i) => [opens[i], closes[i], lows[i], highs[i]]);
-
-    const markLines = {
-      symbol: 'none',
-      lineStyle: { type: 'dashed' as const, width: 1 },
-      label: { fontSize: 9, position: 'insideEndTop' as const },
-      data: [
-        { yAxis: prediction.buyPrice, lineStyle: { color: '#ff4757' }, label: { formatter: '买入', color: '#ff4757' } },
-        { yAxis: prediction.sellPrice, lineStyle: { color: '#ffd700' }, label: { formatter: '卖出', color: '#ffd700' } },
-        { yAxis: prediction.stopLossPrice, lineStyle: { color: '#00ff88' }, label: { formatter: '止损', color: '#00ff88' } },
-      ],
-    };
-
-    const markArea = {
-      silent: true,
-      itemStyle: { color: 'rgba(0,255,136,0.05)', borderColor: 'rgba(0,255,136,0.2)', borderWidth: 1 },
-      data: [[{ xAxis: dates[histEnd] }, { xAxis: dates[dates.length - 1] }]],
-    };
-
-    return {
-      animation: false,
-      backgroundColor: 'transparent',
-      tooltip: {
-        trigger: 'axis',
-        axisPointer: { type: 'cross' },
-        backgroundColor: 'rgba(13,19,51,0.95)',
-        borderColor: '#1e3a5f',
-        textStyle: { color: '#e0e6f0', fontSize: 11 },
-        formatter: (params: any) => {
-          const idx = params[0]?.dataIndex;
-          if (idx === undefined) return '';
-          const bar = allBars[idx];
-          if (!bar) return '';
-          const isPred = idx >= histEnd;
-          const color = closes[idx] >= opens[idx] ? '#ff4757' : '#00ff88';
-          return `<div style="font-family:monospace"><div style="margin-bottom:4px">${bar.date} ${isPred ? '<span style="color:#ffd700">[预测]</span>' : ''}</div><div>开盘: ${opens[idx].toFixed(2)}</div><div>收盘: <span style="color:${color}">${closes[idx].toFixed(2)}</span></div><div>最高: ${highs[idx].toFixed(2)}</div><div>最低: ${lows[idx].toFixed(2)}</div></div>`;
-        },
-      },
-      grid: { left: 48, right: 35, top: 15, bottom: 18 },
-      xAxis: {
-        type: 'category',
-        data: dates,
-        axisLine: { lineStyle: { color: '#1e3a5f' } },
-        axisLabel: { color: '#4a6fa5', fontSize: 8, formatter: (v: string) => v.slice(5) },
-        splitLine: { show: false },
-      },
-      yAxis: {
-        type: 'value',
-        scale: true,
-        axisLine: { show: false },
-        axisLabel: { color: '#4a6fa5', fontSize: 8 },
-        splitLine: { lineStyle: { color: '#1e3a5f', opacity: 0.3 } },
-      },
-      series: [
-        {
-          name: 'K线',
-          type: 'candlestick',
-          data: klineData,
-          itemStyle: { color: '#ff4757', color0: '#00ff88', borderColor: '#ff4757', borderColor0: '#00ff88' },
-          markLine: markLines,
-          markArea,
-        },
-      ],
-    };
-  }, [prediction, historicalBars, horizon]);
-
-  const combinedScore = Math.round(prediction.trendScore * 0.7 + prediction.marketHeat * 0.3);
-  const lastClose = historicalBars.length > 0 ? historicalBars[historicalBars.length - 1].close : 0;
-  const predLastClose = prediction.bars[prediction.bars.length - 1]?.close || 0;
-  const weekReturn = lastClose > 0 ? ((predLastClose - lastClose) / lastClose * 100).toFixed(2) : '0.00';
-  const isUp = predLastClose >= lastClose;
-
-  const riskColor = prediction.riskLevel === 'low' ? '#00ff88' : prediction.riskLevel === 'medium' ? '#ffd700' : '#ff4757';
-  const riskLabel = prediction.riskLevel === 'low' ? '低风险' : prediction.riskLevel === 'medium' ? '中风险' : '高风险';
+  const lastClose = historicalBars[historicalBars.length - 1].close;
+  const direction = prediction.upProbability > prediction.downProbability + 0.05 ? 'up' :
+                    prediction.downProbability > prediction.upProbability + 0.05 ? 'down' : 'flat';
+  const mainProb = Math.round(Math.max(prediction.upProbability, prediction.downProbability, prediction.flatProbability) * 100);
 
   return (
     <div className="space-y-3">
-      {/* 短期/长期切换 */}
       <HorizonSwitch horizon={horizon} onHorizonChange={onHorizonChange} />
 
-      {/* 预测K线图 */}
-      <div className="bg-[#0a0e27]/60 border border-[#1e3a5f]/30 rounded-xl p-1.5" style={{ height: 200 }}>
-        <ReactECharts option={chartOption} style={{ height: '100%', width: '100%' }} />
+      {/* 核心: 方向概率 */}
+      <div className="bg-[#0d1333]/60 border border-[#1e3a5f]/30 rounded-xl p-3">
+        <h3 className="text-white text-xs font-bold mb-2 flex items-center gap-1.5">
+          {direction === 'up' ? <TrendingUp size={13} className="text-[#ff4757]" /> :
+           direction === 'down' ? <TrendingDown size={13} className="text-[#00ff88]" /> :
+           <Activity size={13} className="text-[#ffd700]" />}
+          未来{horizon === 'short' ? 5 : 20}日方向概率
+        </h3>
+        <div className="space-y-1.5">
+          <ProbRow label="上涨" value={prediction.upProbability * 100} color="#ff4757" />
+          <ProbRow label="下跌" value={prediction.downProbability * 100} color="#00ff88" />
+          <ProbRow label="震荡" value={prediction.flatProbability * 100} color="#ffd700" />
+        </div>
       </div>
 
-      {/* 买卖价位卡片 - 核心信息 */}
+      {/* 95%置信区间图 */}
+      <div className="bg-[#0d1333]/60 border border-[#1e3a5f]/30 rounded-xl p-3">
+        <h3 className="text-white text-xs font-bold mb-2 flex items-center gap-1.5">
+          <BarChart3 size={13} className="text-[#1e90ff]" />
+          95%置信区间(收益分布)
+        </h3>
+        <CI95Bar pred={prediction} currentPrice={lastClose} />
+      </div>
+
+      {/* 交易计划(基于概率的价位) */}
       <div className="bg-gradient-to-br from-[#0d1333]/80 to-[#1a1e3a]/60 border border-[#ff4757]/20 rounded-xl p-2.5 md:p-3 space-y-2">
         <div className="flex items-center gap-1.5">
           <Target size={13} className="text-[#ff4757]" />
           <span className="text-white/80 font-bold text-xs">交易计划</span>
-          <span className="text-[#4a6fa5] text-[10px] ml-auto">截至 {latestDate}</span>
+          <span className="text-[#4a6fa5] text-[10px] ml-auto">基于 {latestDate}</span>
         </div>
-
-        {/* 买入价 & 卖出价 */}
         <div className="grid grid-cols-2 gap-2">
           <div className="bg-[#ff4757]/5 border border-[#ff4757]/20 rounded-lg p-2">
             <div className="flex items-center gap-1 mb-0.5">
               <Coins size={11} className="text-[#ff4757]" />
-              <span className="text-[#4a6fa5] text-[10px]">买入价</span>
+              <span className="text-[#4a6fa5] text-[10px]">买入参考</span>
             </div>
             <div className="text-[#ff4757] font-bold font-mono text-base md:text-lg">{prediction.buyPrice.toFixed(2)}</div>
             <div className="text-[#4a6fa5] text-[10px]">
-              距现价 {lastClose > 0 ? (((prediction.buyPrice - lastClose) / lastClose) * 100).toFixed(1) : 0}%
+              距现价 {((prediction.buyPrice - lastClose) / lastClose * 100).toFixed(1)}%
             </div>
           </div>
           <div className="bg-[#ffd700]/5 border border-[#ffd700]/20 rounded-lg p-2">
             <div className="flex items-center gap-1 mb-0.5">
               <TrendingUp size={11} className="text-[#ffd700]" />
-              <span className="text-[#4a6fa5] text-[10px]">卖出价</span>
+              <span className="text-[#4a6fa5] text-[10px]">卖出参考</span>
             </div>
             <div className="text-[#ffd700] font-bold font-mono text-base md:text-lg">{prediction.sellPrice.toFixed(2)}</div>
             <div className="text-[#4a6fa5] text-[10px]">
-              距现价 {lastClose > 0 ? (((prediction.sellPrice - lastClose) / lastClose) * 100).toFixed(1) : 0}%
+              距现价 {((prediction.sellPrice - lastClose) / lastClose * 100).toFixed(1)}%
             </div>
           </div>
         </div>
-
-        {/* 止损 & 持仓天数 & 预期收益 */}
         <div className="grid grid-cols-3 gap-2">
           <div className="bg-[#00ff88]/5 border border-[#00ff88]/20 rounded-lg p-1.5 text-center">
             <div className="flex items-center justify-center gap-1 mb-0.5">
@@ -161,86 +96,77 @@ export default function WeekPredictionPanel({ prediction, historicalBars, latest
           <div className="bg-[#1e90ff]/5 border border-[#1e90ff]/20 rounded-lg p-1.5 text-center">
             <div className="flex items-center justify-center gap-1 mb-0.5">
               <Calendar size={10} className="text-[#1e90ff]" />
-              <span className="text-[#4a6fa5] text-[9px]">持仓</span>
+              <span className="text-[#4a6fa5] text-[9px]">周期</span>
             </div>
-            <div className="text-[#1e90ff] font-bold font-mono text-xs md:text-sm">{prediction.holdDays}天</div>
+            <div className="text-[#1e90ff] font-bold font-mono text-xs md:text-sm">{prediction.days}天</div>
           </div>
           <div className="bg-[#a855f7]/5 border border-[#a855f7]/20 rounded-lg p-1.5 text-center">
             <div className="flex items-center justify-center gap-1 mb-0.5">
               <Zap size={10} className="text-[#a855f7]" />
-              <span className="text-[#4a6fa5] text-[9px]">预期</span>
+              <span className="text-[#4a6fa5] text-[9px]">期望</span>
             </div>
-            <div className={`font-bold font-mono text-xs md:text-sm ${prediction.expectedReturn > 0 ? 'text-[#ff4757]' : 'text-[#00ff88]'}`}>
-              {prediction.expectedReturn > 0 ? '+' : ''}{prediction.expectedReturn}%
+            <div className={`font-bold font-mono text-xs md:text-sm ${prediction.expectedReturn >= 0 ? 'text-[#ff4757]' : 'text-[#00ff88]'}`}>
+              {prediction.expectedReturn >= 0 ? '+' : ''}{prediction.expectedReturn.toFixed(2)}%
             </div>
-          </div>
-        </div>
-
-        {/* 风险等级条 */}
-        <div className="flex items-center gap-2">
-          <span className="text-[#4a6fa5] text-[10px]">风险</span>
-          <div className="flex-1 h-1.5 bg-[#1e3a5f]/30 rounded-full overflow-hidden">
-            <div
-              className="h-full rounded-full"
-              style={{ width: prediction.riskLevel === 'low' ? '30%' : prediction.riskLevel === 'medium' ? '60%' : '90%', background: riskColor }}
-            />
-          </div>
-          <span className="text-[10px] font-bold" style={{ color: riskColor }}>{riskLabel}</span>
-        </div>
-      </div>
-
-      {/* 核心指标 */}
-      <div className="grid grid-cols-3 gap-2">
-        <div className="bg-[#0d1333]/60 border border-[#1e3a5f]/30 rounded-xl p-2 text-center">
-          <span className="text-[#4a6fa5] text-[10px] block mb-0.5">综合评分</span>
-          <div className={`text-base md:text-lg font-bold font-mono ${combinedScore > 55 ? 'text-[#ff4757]' : combinedScore < 45 ? 'text-[#00ff88]' : 'text-[#ffd700]'}`}>
-            {combinedScore}
-          </div>
-        </div>
-        <div className="bg-[#0d1333]/60 border border-[#1e3a5f]/30 rounded-xl p-2 text-center">
-          <span className="text-[#4a6fa5] text-[10px] block mb-0.5">预计涨跌</span>
-          <div className={`text-base md:text-lg font-bold font-mono ${isUp ? 'text-[#ff4757]' : 'text-[#00ff88]'}`}>
-            {isUp ? '+' : ''}{weekReturn}%
-          </div>
-        </div>
-        <div className="bg-[#0d1333]/60 border border-[#1e3a5f]/30 rounded-xl p-2 text-center">
-          <span className="text-[#4a6fa5] text-[10px] block mb-0.5">大盘热度</span>
-          <div className={`text-base md:text-lg font-bold font-mono ${
-            prediction.marketHeat > 65 ? 'text-[#ff4757]' : prediction.marketHeat < 35 ? 'text-[#1e90ff]' : 'text-[#ffd700]'
-          }`}>
-            {prediction.marketHeat}
           </div>
         </div>
       </div>
 
-      {/* 每日预测 - 仅短期显示 */}
-      {horizon === 'short' && (
-        <div className="bg-[#0d1333]/60 border border-[#1e3a5f]/30 rounded-xl p-2.5">
-          <div className="text-[#4a6fa5] text-xs mb-1.5">每日预测</div>
-          <div className="space-y-1">
-            {prediction.bars.map((bar, i) => {
-              const dayChange = i === 0
-                ? ((bar.close - lastClose) / lastClose * 100).toFixed(2)
-                : ((bar.close - prediction.bars[i-1].close) / prediction.bars[i-1].close * 100).toFixed(2);
-              const up = bar.close >= bar.open;
-              return (
-                <div key={i} className="flex items-center justify-between text-xs">
-                  <span className="text-[#4a6fa5] font-mono w-14">{bar.date.slice(5)}</span>
-                  <span className={`font-mono ${up ? 'text-[#ff4757]' : 'text-[#00ff88]'}`}>{bar.close.toFixed(2)}</span>
-                  <span className={`font-mono ${parseFloat(dayChange) >= 0 ? 'text-[#ff4757]' : 'text-[#00ff88]'}`}>
-                    {parseFloat(dayChange) >= 0 ? '+' : ''}{dayChange}%
-                  </span>
-                </div>
-              );
-            })}
+      {/* 关键数据卡 */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+        <DataCard label="期望收益" value={`${prediction.expectedReturn >= 0 ? '+' : ''}${prediction.expectedReturn.toFixed(2)}%`}
+          color={prediction.expectedReturn > 0 ? '#ff4757' : prediction.expectedReturn < 0 ? '#00ff88' : '#4a6fa5'} />
+        <DataCard label="80%区间" value={`[${prediction.ci80Lower.toFixed(1)}, ${prediction.ci80Upper.toFixed(1)}]%`} color="#1e90ff" />
+        <DataCard label="匹配样本" value={prediction.matchSampleSize.toString()}
+          color={prediction.matchSampleSize >= 30 ? '#00ff88' : '#ffd700'} />
+        <DataCard label="回测准确率" value={`${(prediction.backtest.directionAccuracy * 100).toFixed(1)}%`}
+          color={prediction.backtest.directionAccuracy > 0.55 ? '#ff4757' : prediction.backtest.directionAccuracy > 0.45 ? '#ffd700' : '#00ff88'} />
+      </div>
+
+      {/* 模型自身回测 */}
+      {prediction.backtest.horizons.length > 0 && (
+        <div className="bg-[#0d1333]/60 border border-[#1e3a5f]/30 rounded-xl p-3">
+          <h3 className="text-white text-xs font-bold mb-2 flex items-center gap-1.5">
+            <FlaskConical size={13} className="text-[#ffd700]" />
+            模型自身回测(过去250日)
+          </h3>
+          <div className="grid grid-cols-3 gap-2 text-center">
+            {prediction.backtest.horizons.map(h => (
+              <div key={h.days} className="bg-[#0a0e27]/60 rounded p-1.5">
+                <div className="text-[#4a6fa5] text-[10px]">未来{h.days}日</div>
+                <div className="font-mono font-bold text-sm" style={{
+                  color: h.accuracy > 0.55 ? '#ff4757' : h.accuracy > 0.45 ? '#ffd700' : '#00ff88'
+                }}>{(h.accuracy * 100).toFixed(1)}%</div>
+                <div className="text-[9px] text-[#4a6fa5]">n={h.sampleSize}</div>
+              </div>
+            ))}
           </div>
         </div>
       )}
 
+      {/* 因子与权重 */}
+      <div className="bg-[#0d1333]/60 border border-[#1e3a5f]/30 rounded-xl p-3">
+        <h3 className="text-white text-xs font-bold mb-2 flex items-center gap-1.5">
+          <BarChart3 size={13} className="text-[#1e90ff]" />
+          因子与权重(网格搜索最优)
+        </h3>
+        <div className="space-y-1.5">
+          <FactorBar label="技术指标" score={prediction.score} weight={prediction.weights.technical} subScore={50} />
+          <FactorBar label="短期动量" score={prediction.score} weight={prediction.weights.momentum} subScore={50} />
+          <FactorBar label="趋势强度" score={prediction.score} weight={prediction.weights.trend} subScore={50} />
+          <FactorBar label="历史模式" score={prediction.score} weight={prediction.weights.pattern} subScore={50} />
+        </div>
+        {prediction.weightAccuracy > 0 && (
+          <p className="text-[10px] text-[#4a6fa5] mt-2 pt-2 border-t border-[#1e3a5f]/20">
+            该权重历史样本外准确率: <span className="text-white/80">{(prediction.weightAccuracy * 100).toFixed(1)}%</span>
+          </p>
+        )}
+      </div>
+
       {/* 摘要 */}
       <div className="bg-[#0d1333]/60 border border-[#1e3a5f]/30 rounded-xl p-2.5">
-        <p className="text-[#4a6fa5] text-[11px] md:text-xs leading-relaxed">{prediction.summary}</p>
-        <p className="text-[#4a6fa5]/50 text-[10px] mt-1.5">⚠ 预测仅供参考，不构成投资建议</p>
+        <p className="text-[#4a6fa5] text-[11px] leading-relaxed">{prediction.summary}</p>
+        <p className="text-[#4a6fa5]/50 text-[10px] mt-1.5">⚠ 预测仅供参考,模型自身回测准确率 {">"}50% 也不保证未来收益</p>
       </div>
     </div>
   );
@@ -257,8 +183,7 @@ function HorizonSwitch({ horizon, onHorizonChange }: { horizon: PredictionHorizo
             : 'text-[#4a6fa5] hover:text-white/70'
         }`}
       >
-        <Zap size={12} />
-        短期 (5天)
+        <Zap size={12} />短期 (5天)
       </button>
       <button
         onClick={() => onHorizonChange('long')}
@@ -268,9 +193,74 @@ function HorizonSwitch({ horizon, onHorizonChange }: { horizon: PredictionHorizo
             : 'text-[#4a6fa5] hover:text-white/70'
         }`}
       >
-        <Calendar size={12} />
-        长期 (20天)
+        <Calendar size={12} />长期 (20天)
       </button>
+    </div>
+  );
+}
+
+function ProbRow({ label, value, color }: { label: string; value: number; color: string }) {
+  return (
+    <div>
+      <div className="flex items-center justify-between text-xs mb-0.5">
+        <span style={{ color }}>{label}</span>
+        <span className="font-mono font-bold" style={{ color }}>{value.toFixed(1)}%</span>
+      </div>
+      <div className="h-1.5 bg-[#0a0e27] rounded-full overflow-hidden">
+        <div className="h-full rounded-full transition-all" style={{ width: `${value}%`, background: color }} />
+      </div>
+    </div>
+  );
+}
+
+function CI95Bar({ pred, currentPrice }: { pred: WeekPrediction; currentPrice: number }) {
+  const range = 10;
+  const min = -range, max = range;
+  const total = max - min;
+  const zeroX = ((0 - min) / total) * 100;
+  const lowerX = Math.max(0, Math.min(100, ((pred.ci95Lower - min) / total) * 100));
+  const upperX = Math.max(0, Math.min(100, ((pred.ci95Upper - min) / total) * 100));
+  const expectedX = Math.max(0, Math.min(100, ((pred.expectedReturn - min) / total) * 100));
+  return (
+    <div>
+      <div className="relative h-8 mt-3">
+        <div className="absolute top-0 bottom-0 w-px bg-[#4a6fa5]" style={{ left: `${zeroX}%` }} />
+        <div className="absolute top-2 bottom-2 rounded" style={{
+          left: `${lowerX}%`, width: `${upperX - lowerX}%`,
+          background: pred.ci95Upper > 0 && pred.ci95Lower < 0
+            ? 'linear-gradient(to right, #00ff8833 0%, #00ff8833 50%, #ff475733 50%, #ff475733 100%)'
+            : pred.ci95Upper <= 0 ? '#00ff8833' : '#ff475733'
+        }} />
+        <div className="absolute top-0 bottom-0 w-1 rounded" style={{ left: `${expectedX}%`, background: '#ffd700' }} />
+        <div className="absolute -top-1 text-[10px] text-[#00ff88] font-mono" style={{ left: `${lowerX}%`, transform: 'translateX(-50%)' }}>{pred.ci95Lower.toFixed(1)}%</div>
+        <div className="absolute -top-1 text-[10px] text-[#ff4757] font-mono" style={{ left: `${upperX}%`, transform: 'translateX(-50%)' }}>{pred.ci95Upper.toFixed(1)}%</div>
+      </div>
+      <div className="flex justify-between text-[10px] text-[#4a6fa5] mt-2">
+        <span>-10%</span><span>0%</span><span>+10%</span>
+      </div>
+    </div>
+  );
+}
+
+function DataCard({ label, value, color }: { label: string; value: string; color: string }) {
+  return (
+    <div className="bg-[#0a0e27]/60 rounded-lg p-2">
+      <div className="text-[#4a6fa5] text-[10px]">{label}</div>
+      <div className="font-mono font-bold text-sm" style={{ color }}>{value}</div>
+    </div>
+  );
+}
+
+function FactorBar({ label, weight, subScore }: { label: string; score: number; weight: number; subScore: number }) {
+  return (
+    <div className="flex items-center justify-between text-xs">
+      <span className="text-[#4a6fa5] flex-1">{label}</span>
+      <div className="flex items-center gap-3">
+        <div className="text-[#4a6fa5] text-[10px]">权重 {(weight * 100).toFixed(0)}%</div>
+        <div className="w-20 h-1.5 bg-[#0a0e27] rounded-full overflow-hidden">
+          <div className="h-full rounded-full bg-[#1e90ff]" style={{ width: `${weight * 100}%` }} />
+        </div>
+      </div>
     </div>
   );
 }
