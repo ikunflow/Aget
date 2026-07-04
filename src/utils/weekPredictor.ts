@@ -1,5 +1,29 @@
 import type { DailyBar, IndicatorData, WeekPrediction, PredictedBar, PredictionHorizon } from './types';
 
+// 确定性伪随机数(保证相同输入→相同输出)
+function hashString(str: string): number {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < str.length; i++) {
+    h = Math.imul(h ^ str.charCodeAt(i), 16777619);
+  }
+  return h >>> 0;
+}
+
+function mulberry32(seed: number): () => number {
+  let t = seed >>> 0;
+  return function () {
+    t = (t + 0x6D2B79F5) >>> 0;
+    let r = t;
+    r = Math.imul(r ^ (r >>> 15), r | 1);
+    r ^= r + Math.imul(r ^ (r >>> 7), r | 61);
+    return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function makeSeededRand(code: string, lastDate: string, price: number): () => number {
+  return mulberry32(hashString(`${code}|${lastDate}|${price.toFixed(4)}`));
+}
+
 // 获取未来N个交易日日期（跳过周末）
 function getNextTradeDates(lastDate: string, count: number): string[] {
   const dates: string[] = [];
@@ -168,6 +192,7 @@ function analyzeQuantPatterns(bars: DailyBar[], indicators: IndicatorData) {
 
 // 生成预测K线
 function generatePredictedBars(
+  code: string,
   lastBar: DailyBar,
   quant: ReturnType<typeof analyzeQuantPatterns>,
   marketHeat: number,
@@ -179,23 +204,26 @@ function generatePredictedBars(
   const combinedScore = trendScore * quantWeight + marketHeat * marketWeight;
   const expectedDailyReturn = ((combinedScore - 50) / 50) * volatility * 0.8;
 
+  // 确定性种子随机
+  const rand = makeSeededRand(code, lastBar.date, lastBar.close);
+
   const predicted: PredictedBar[] = [];
   let prevClose = lastBar.close;
   const avgVol = lastBar.volume;
 
   for (let i = 0; i < futureDates.length; i++) {
     const uncertaintyScale = 1 + i * 0.15;
-    const randomComponent = (Math.random() - 0.5) * 2 * volatility * uncertaintyScale * 0.6;
+    const randomComponent = (rand() - 0.5) * 2 * volatility * uncertaintyScale * 0.6;
     const dayReturn = expectedDailyReturn + randomComponent;
     const clampedReturn = Math.max(-0.1, Math.min(0.1, dayReturn));
 
     const close = Math.round(prevClose * (1 + clampedReturn) * 100) / 100;
-    const open = Math.round(prevClose * (1 + (Math.random() - 0.5) * volatility * 0.5) * 100) / 100;
+    const open = Math.round(prevClose * (1 + (rand() - 0.5) * volatility * 0.5) * 100) / 100;
     const intraVolatility = volatility * (1 + i * 0.1);
-    const high = Math.round(Math.max(open, close) * (1 + Math.random() * intraVolatility * 0.8) * 100) / 100;
-    const low = Math.round(Math.min(open, close) * (1 - Math.random() * intraVolatility * 0.8) * 100) / 100;
+    const high = Math.round(Math.max(open, close) * (1 + rand() * intraVolatility * 0.8) * 100) / 100;
+    const low = Math.round(Math.min(open, close) * (1 - rand() * intraVolatility * 0.8) * 100) / 100;
     const volBias = combinedScore > 55 ? 1.05 : combinedScore < 45 ? 0.95 : 1;
-    const volume = Math.round(avgVol * volBias * (0.9 + Math.random() * 0.2));
+    const volume = Math.round(avgVol * volBias * (0.9 + rand() * 0.2));
 
     predicted.push({ date: futureDates[i], open, high, low, close, volume, isPredicted: true });
     prevClose = close;
@@ -321,6 +349,7 @@ function generateSummary(
 
 // 主预测函数
 export function predictWeek(
+  code: string,
   bars: DailyBar[],
   indicators: IndicatorData,
   marketHeat: number = 50,
@@ -350,7 +379,7 @@ export function predictWeek(
   const lastBar = bars[len - 1];
   const futureDates = getNextTradeDates(lastBar.date, predictDays);
   const quant = analyzeQuantPatterns(bars, indicators);
-  const predictedBars = generatePredictedBars(lastBar, quant, marketHeat, futureDates);
+  const predictedBars = generatePredictedBars(code, lastBar, quant, marketHeat, futureDates);
 
   const quantWeight = 0.7;
   const marketWeight = 0.3;

@@ -120,7 +120,7 @@ export const useStockStore = create<StockState>((set, get) => ({
         marketLabel = heatData.label;
       } catch {}
 
-      const weekPred = predictWeek(bars, indicators, marketHeat, marketLabel, horizon);
+      const weekPred = predictWeek(code, bars, indicators, marketHeat, marketLabel, horizon);
 
       set({
         stockCode: code,
@@ -146,7 +146,7 @@ export const useStockStore = create<StockState>((set, get) => ({
         const indicators = calcAllIndicators(bars);
         const predictionResult = predict(bars, indicators);
         const backtest = backtestStrategy(activeStrategy, bars, indicators);
-        const weekPred = predictWeek(bars, indicators, 50, '温和', horizon);
+        const weekPred = predictWeek(code, bars, indicators, 50, '温和', horizon);
         set({
           stockCode: code,
           stockName,
@@ -182,10 +182,10 @@ export const useStockStore = create<StockState>((set, get) => ({
   },
 
   setHorizon: (h: PredictionHorizon) => {
-    const { bars, indicators, weekPrediction } = get();
+    const { bars, indicators, weekPrediction, stockCode } = get();
     set({ horizon: h });
     if (!indicators || bars.length === 0 || !weekPrediction) return;
-    const weekPred = predictWeek(bars, indicators, weekPrediction.marketHeat, weekPrediction.marketLabel, h);
+    const weekPred = predictWeek(stockCode, bars, indicators, weekPrediction.marketHeat, weekPrediction.marketLabel, h);
     set({ weekPrediction: weekPred });
   },
 }));

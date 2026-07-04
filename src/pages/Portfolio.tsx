@@ -206,7 +206,7 @@ function HoldingCard({ holding, onRemove, onClick, onProfitUpdate }: { holding: 
       const bars = klineData.bars;
       const currentPrice = bars[bars.length - 1].close;
       const indicators = calcAllIndicators(bars);
-      const prediction = predictWeek(bars, indicators, 50, '温和', 'short');
+      const prediction = predictWeek(holding.code, bars, indicators, 50, '温和', 'short');
       setAnalysis({ currentPrice, prediction, loading: false });
     } catch {
       setAnalysis({ currentPrice: holding.costPrice, prediction: null, loading: false });
