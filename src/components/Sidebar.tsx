@@ -1,9 +1,10 @@
 import { NavLink } from 'react-router-dom';
-import { BarChart3, Brain, Briefcase, TrendingUp, LogIn, LogOut, User } from 'lucide-react';
+import { BarChart3, Brain, Briefcase, TrendingUp, LogIn, LogOut, User, Clock } from 'lucide-react';
 import { useAuth } from '@/hooks/useAuth';
 
 const navItems = [
   { to: '/', icon: BarChart3, label: '行情' },
+  { to: '/realtime', icon: Clock, label: '实时' },
   { to: '/quant', icon: Brain, label: '量化' },
   { to: '/portfolio', icon: Briefcase, label: '持仓', requireAuth: true },
 ];

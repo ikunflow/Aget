@@ -5,6 +5,7 @@ import AuthDialog from "@/components/AuthDialog";
 import Analysis from "@/pages/Analysis";
 import Quant from "@/pages/Quant";
 import Portfolio from "@/pages/Portfolio";
+import RealtimePredict from "@/pages/RealtimePredict";
 import { useAuth } from "@/hooks/useAuth";
 
 export default function App() {
@@ -18,6 +19,7 @@ export default function App() {
         <main className="flex-1 min-w-0 overflow-hidden pb-16 md:pb-0">
           <Routes>
             <Route path="/" element={<Analysis />} />
+            <Route path="/realtime" element={<RealtimePredict />} />
             <Route path="/quant" element={<Quant />} />
             <Route
               path="/portfolio"
