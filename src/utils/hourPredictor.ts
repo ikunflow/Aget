@@ -1,5 +1,37 @@
 import type { DailyBar, IndicatorData } from './types';
 
+// 基于输入的确定性伪随机数生成器(保证相同输入→相同输出)
+// 使用 mulberry32 算法,种子由 code + 预测日期 + 当前价 hash 得到
+function hashString(str: string): number {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < str.length; i++) {
+    h = Math.imul(h ^ str.charCodeAt(i), 16777619);
+  }
+  return h >>> 0;
+}
+
+function mulberry32(seed: number): () => number {
+  let t = seed >>> 0;
+  return function () {
+    t = (t + 0x6D2B79F5) >>> 0;
+    let r = t;
+    r = Math.imul(r ^ (r >>> 15), r | 1);
+    r ^= r + Math.imul(r ^ (r >>> 7), r | 61);
+    return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function makeSeededRand(code: string, dateStr: string, price: number): () => number {
+  const seed = hashString(`${code}|${dateStr}|${price.toFixed(4)}`);
+  return mulberry32(seed);
+}
+
+// 预测快照:用于让同一天同代码的预测保持一致
+function getPredictionKey(dateStr: string): string {
+  // 用到日(交易日期)做快照键,保证同一天内结果一致
+  return dateStr.slice(0, 10);
+}
+
 // 小时级预测结果
 export interface HourPrediction {
   // 12个5分钟点(覆盖1小时)
@@ -84,6 +116,7 @@ function calcBollingerPosition(closes: number[], period: number = 20): number {
 
 // 1小时预测主函数
 export function predictHour(
+  code: string,
   bars: DailyBar[],
   indicators: IndicatorData | null,
   marketHeat: number = 50
@@ -91,6 +124,9 @@ export function predictHour(
   const closes = bars.map(b => b.close);
   const volumes = bars.map(b => b.volume);
   const currentPrice = closes[closes.length - 1];
+  const lastDate = bars[bars.length - 1].date;
+  // 确定性种子:相同代码+日期+价格,预测结果一致
+  const rand = makeSeededRand(code, getPredictionKey(lastDate), currentPrice);
 
   if (closes.length < 20) {
     return defaultPrediction(currentPrice, '数据不足');
@@ -203,14 +239,17 @@ export function predictHour(
     expectedChange = -((50 - score) / 100) * 0.015 - heatSuppress * 0.005;
   } else {
     direction = 'flat';
-    expectedChange = (meanReturn * 0.05) + (Math.random() - 0.5) * 0.003;
+    // 使用确定性随机代替 Math.random()
+    expectedChange = (meanReturn * 0.05) + (rand() - 0.5) * 0.003;
   }
 
   expectedChange = Math.max(-hourlyVol * 2, Math.min(hourlyVol * 2, expectedChange));
   const predictedClose = currentPrice * (1 + expectedChange);
 
   // === 生成12个5分钟预测点 ===
-  const startTime = new Date();
+  // 使用确定性的基准时间(基于最后交易日,固定到下午收盘后)
+  // 这样同一天同一只股票无论何时点击,K线时间标签都一致
+  const startTime = new Date(lastDate + 'T15:00:00');
   const timeSlots = generateTimeSlots(startTime, 12);
   const predictedBars: HourPrediction['predictedBars'] = [];
 
@@ -222,8 +261,8 @@ export function predictHour(
 
   for (let i = 0; i < 12; i++) {
     const prev = price;
-    // 漂移 + 随机扰动
-    const noise = (Math.random() - 0.5) * 2 * diffusion;
+    // 漂移 + 确定性扰动(种子随机)
+    const noise = (rand() - 0.5) * 2 * diffusion;
     price = prev + drift + noise;
     const open = prev;
     const close = price;
@@ -236,7 +275,7 @@ export function predictHour(
       high,
       low,
       close,
-      volume: Math.round(avgVol * (0.7 + Math.random() * 0.6)),
+      volume: Math.round(avgVol * (0.7 + rand() * 0.6)),
     });
   }
 

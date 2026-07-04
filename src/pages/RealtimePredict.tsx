@@ -1,14 +1,18 @@
 import { useState, useEffect, useCallback } from 'react';
 import ReactECharts from 'echarts-for-react';
 import { useStockStore } from '@/store/useStockStore';
+import { useAuth } from '@/hooks/useAuth';
+import { usePredictions } from '@/hooks/usePredictions';
 import { fetchKline, fetchMarketHeat } from '@/utils/api';
 import { calcAllIndicators } from '@/utils/indicators';
 import { predictHour, type HourPrediction } from '@/utils/hourPredictor';
 import type { DailyBar } from '@/utils/types';
-import { Search, Loader2, Clock, TrendingUp, TrendingDown, Activity, Zap, BarChart3, AlertCircle, CheckCircle2, Target, ShieldAlert } from 'lucide-react';
+import { Search, Loader2, Clock, TrendingUp, TrendingDown, Activity, Zap, BarChart3, AlertCircle, CheckCircle2, Target, ShieldAlert, Database, History, Check, X } from 'lucide-react';
 
 export default function RealtimePredict() {
   const { searchQuery, searchResults, setSearchQuery, selectStock, stockCode, stockName, bars, loading, useRealData } = useStockStore();
+  const { user } = useAuth();
+  const { records, loading: recordsLoading, savePrediction, resolvePending, stats } = usePredictions(user?.uid || null);
   const [hourPred, setHourPred] = useState<HourPrediction | null>(null);
   const [predicting, setPredicting] = useState(false);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
@@ -16,7 +20,7 @@ export default function RealtimePredict() {
   const [refreshInterval, setRefreshInterval] = useState(60); // 秒
 
   // 当选中股票时,执行小时级预测
-  const runPrediction = useCallback(async (code: string) => {
+  const runPrediction = useCallback(async (code: string, name?: string) => {
     setPredicting(true);
     try {
       const klineData = await fetchKline(code, 250);
@@ -24,29 +28,50 @@ export default function RealtimePredict() {
       const bars = klineData.bars;
       const indicators = calcAllIndicators(bars);
       const heat = await fetchMarketHeat().catch(() => ({ heat: 50, label: '温和' }));
-      const pred = predictHour(bars, indicators, heat.heat);
+      // 注意: predictHour 现在接收 code 作为第一个参数(用于确定性种子)
+      const pred = predictHour(code, bars, indicators, heat.heat);
       setHourPred(pred);
       setLastUpdate(new Date());
+      // 保存到数据库(用最后一根K线的日期作为 baseDate)
+      if (user) {
+        const lastBar = bars[bars.length - 1];
+        await savePrediction(
+          pred,
+          code,
+          name || stockName || code,
+          lastBar.date,
+          lastBar.close
+        );
+      }
     } catch (e) {
       console.error('小时预测失败:', e);
     } finally {
       setPredicting(false);
     }
-  }, []);
+  }, [user, stockName, savePrediction]);
 
   // 监听选中股票
   useEffect(() => {
     if (stockCode && stockCode.length === 6) {
-      runPrediction(stockCode);
+      runPrediction(stockCode, stockName);
     }
-  }, [stockCode, runPrediction]);
+  }, [stockCode, stockName, runPrediction]);
 
   // 自动刷新
   useEffect(() => {
     if (!autoRefresh || !stockCode) return;
-    const timer = setInterval(() => runPrediction(stockCode), refreshInterval * 1000);
+    const timer = setInterval(() => runPrediction(stockCode, stockName), refreshInterval * 1000);
     return () => clearInterval(timer);
-  }, [autoRefresh, stockCode, refreshInterval, runPrediction]);
+  }, [autoRefresh, stockCode, stockName, refreshInterval, runPrediction]);
+
+  // 进入页面时,自动回填未对比的预测(优先在后台执行,不阻塞UI)
+  useEffect(() => {
+    if (user && records.length > 0 && stats.resolved < stats.total) {
+      // 静默触发,不显示loading
+      resolvePending().catch(() => {});
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user]);
 
   // K线图配置
   const chartOption = hourPred ? buildChartOption(hourPred) : null;
@@ -126,7 +151,7 @@ export default function RealtimePredict() {
               <option value={300}>5分钟</option>
             </select>
             <button
-              onClick={() => runPrediction(stockCode)}
+              onClick={() => runPrediction(stockCode, stockName)}
               disabled={predicting}
               className="flex items-center gap-1 px-2.5 py-1.5 bg-[#1e90ff]/20 border border-[#1e90ff]/40 text-[#1e90ff] rounded-lg text-xs hover:bg-[#1e90ff]/30 disabled:opacity-50"
             >
@@ -231,6 +256,18 @@ export default function RealtimePredict() {
               </span>
             </p>
           </div>
+
+          {/* 历史准确率统计 */}
+          {user && (
+            <AccuracyPanel
+              records={records}
+              stats={stats}
+              loading={recordsLoading}
+              currentCode={stockCode}
+              currentName={stockName}
+              onResolve={resolvePending}
+            />
+          )}
         </>
       )}
 
@@ -283,6 +320,167 @@ function FactorBar({ label, score, weight }: { label: string; score: number; wei
           style={{ width: `${score}%`, background: color }}
         />
       </div>
+    </div>
+  );
+}
+
+// 准确率统计面板
+function AccuracyPanel({ records, stats, loading, currentCode, currentName, onResolve }: {
+  records: import('@/hooks/usePredictions').PredictionRecord[];
+  stats: {
+    total: number;
+    resolved: number;
+    correct: number;
+    incorrect: number;
+    accuracy: number | null;
+  };
+  loading: boolean;
+  currentCode: string;
+  currentName: string;
+  onResolve: () => Promise<void>;
+}) {
+  const [showAll, setShowAll] = useState(false);
+  const [resolving, setResolving] = useState(false);
+  const accuracyColor = stats.accuracy === null
+    ? '#4a6fa5'
+    : stats.accuracy >= 0.6
+    ? '#ff4757'
+    : stats.accuracy >= 0.4
+    ? '#ffd700'
+    : '#00ff88';
+
+  // 当前股票的最近记录
+  const currentStockRecords = records.filter(r => r.code === currentCode);
+  // 显示最近5条或全部
+  const displayRecords = (showAll ? records : records.slice(0, 5));
+
+  return (
+    <div className="bg-[#0d1333]/60 border border-[#1e3a5f]/30 rounded-xl p-3">
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="text-white text-sm font-bold flex items-center gap-1.5">
+          <Database size={14} className="text-[#ffd700]" />
+          预测准确率统计
+        </h3>
+        <button
+          onClick={async () => {
+            setResolving(true);
+            try { await onResolve(); } finally { setResolving(false); }
+          }}
+          disabled={resolving || stats.resolved === stats.total}
+          className="flex items-center gap-1 px-2.5 py-1 bg-[#00ff88]/10 border border-[#00ff88]/30 text-[#00ff88] rounded-lg text-xs hover:bg-[#00ff88]/20 disabled:opacity-40"
+        >
+          {resolving ? <Loader2 size={11} className="animate-spin" /> : <History size={11} />}
+          对比历史
+        </button>
+      </div>
+
+      {loading ? (
+        <div className="py-4 text-center text-[#4a6fa5] text-xs">加载中...</div>
+      ) : records.length === 0 ? (
+        <div className="py-4 text-center text-[#4a6fa5] text-xs">
+          暂无历史预测。选择股票后会自动保存预测,1天后系统会自动对比实际收盘价。
+        </div>
+      ) : (
+        <>
+          {/* 核心统计卡片 */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3">
+            <div className="bg-[#0a0e27]/60 rounded-lg p-2.5">
+              <div className="text-[#4a6fa5] text-[10px] uppercase tracking-wider">总预测数</div>
+              <div className="text-white/90 font-mono font-bold text-base mt-0.5">{stats.total}</div>
+            </div>
+            <div className="bg-[#0a0e27]/60 rounded-lg p-2.5">
+              <div className="text-[#4a6fa5] text-[10px] uppercase tracking-wider">已对比</div>
+              <div className="text-white/90 font-mono font-bold text-base mt-0.5">{stats.resolved}</div>
+            </div>
+            <div className="bg-[#0a0e27]/60 rounded-lg p-2.5">
+              <div className="text-[#4a6fa5] text-[10px] uppercase tracking-wider">命中/失误</div>
+              <div className="font-mono font-bold text-base mt-0.5">
+                <span className="text-[#ff4757]">{stats.correct}</span>
+                <span className="text-[#4a6fa5]"> / </span>
+                <span className="text-[#00ff88]">{stats.incorrect}</span>
+              </div>
+            </div>
+            <div className="bg-[#0a0e27]/60 rounded-lg p-2.5">
+              <div className="text-[#4a6fa5] text-[10px] uppercase tracking-wider">准确率</div>
+              <div className="font-mono font-bold text-base mt-0.5" style={{ color: accuracyColor }}>
+                {stats.accuracy === null ? '--' : `${(stats.accuracy * 100).toFixed(1)}%`}
+              </div>
+            </div>
+          </div>
+
+          {/* 当前股票统计 */}
+          {currentStockRecords.length > 0 && (
+            <div className="text-xs text-[#4a6fa5] mb-2">
+              <span className="text-white/80">{currentName || currentCode}</span>
+              {' '}已记录 <span className="text-white/90 font-mono">{currentStockRecords.length}</span> 次预测
+              {currentStockRecords.some(r => r.resolved) && (
+                <>
+                  ,其中命中 <span className="text-[#ff4757] font-mono">{currentStockRecords.filter(r => r.isCorrect).length}</span> 次
+                </>
+              )}
+            </div>
+          )}
+
+          {/* 历史记录表 */}
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-[#4a6fa5] border-b border-[#1e3a5f]/30">
+                  <th className="text-left py-1.5 font-medium">代码</th>
+                  <th className="text-left py-1.5 font-medium">预测日</th>
+                  <th className="text-right py-1.5 font-medium">预测价</th>
+                  <th className="text-right py-1.5 font-medium">实际价</th>
+                  <th className="text-right py-1.5 font-medium">结果</th>
+                </tr>
+              </thead>
+              <tbody>
+                {displayRecords.map((r) => {
+                  const result = !r.resolved
+                    ? <span className="text-[#4a6fa5]">待对比</span>
+                    : r.isCorrect === true
+                    ? <span className="text-[#ff4757] flex items-center justify-end gap-0.5"><Check size={10} />命中</span>
+                    : r.isCorrect === false
+                    ? <span className="text-[#00ff88] flex items-center justify-end gap-0.5"><X size={10} />失误</span>
+                    : <span className="text-[#ffd700]">震荡</span>;
+                  return (
+                    <tr key={r.id} className="border-b border-[#1e3a5f]/15 hover:bg-[#1e3a5f]/10">
+                      <td className="py-1.5 text-white/80 font-mono">{r.code}</td>
+                      <td className="py-1.5 text-[#4a6fa5]">{r.baseDate}</td>
+                      <td className="py-1.5 text-right font-mono text-white/80">
+                        {r.predictedClose.toFixed(2)}
+                        <div className="text-[10px]" style={{ color: r.predictedChange >= 0 ? '#ff4757' : '#00ff88' }}>
+                          {r.predictedChange >= 0 ? '+' : ''}{r.predictedChange.toFixed(2)}%
+                        </div>
+                      </td>
+                      <td className="py-1.5 text-right font-mono">
+                        {r.actualClose !== null ? (
+                          <>
+                            <span className="text-white/80">{r.actualClose.toFixed(2)}</span>
+                            <div className="text-[10px]" style={{ color: (r.actualChange || 0) >= 0 ? '#ff4757' : '#00ff88' }}>
+                              {(r.actualChange || 0) >= 0 ? '+' : ''}{(r.actualChange || 0).toFixed(2)}%
+                            </div>
+                          </>
+                        ) : (
+                          <span className="text-[#4a6fa5]">--</span>
+                        )}
+                      </td>
+                      <td className="py-1.5 text-right">{result}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            {records.length > 5 && (
+              <button
+                onClick={() => setShowAll(!showAll)}
+                className="w-full mt-2 py-1.5 text-xs text-[#1e90ff] hover:bg-[#1e90ff]/10 rounded-lg"
+              >
+                {showAll ? '收起' : `查看全部 ${records.length} 条记录`}
+              </button>
+            )}
+          </div>
+        </>
+      )}
     </div>
   );
 }
