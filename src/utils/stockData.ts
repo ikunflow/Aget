@@ -132,7 +132,9 @@ export function generateStockData(code: string): DailyBar[] {
   const bars: DailyBar[] = [];
   let price = basePrice;
 
-  const startDate = new Date('2024-07-01');
+  // 模拟数据起始日:当前日期往前推240个交易日(约1年)
+  const startDate = new Date();
+  startDate.setDate(startDate.getDate() - 365);
   let tradingDay = 0;
 
   for (let i = 0; i < 350 && tradingDay < 240; i++) {
