@@ -76,11 +76,10 @@ export default function RealtimePredict() {
   }, [autoRefresh, stockCode, stockName, refreshInterval, runPrediction]);
 
   useEffect(() => {
-    if (user && records.length > 0 && stats.resolved < stats.total) {
+    if (user && records.length > 0 && records.some(r => !r.resolved)) {
       resolvePending().catch(() => {});
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user]);
+  }, [user, records.length]);
 
   return (
     <div className="h-full flex flex-col gap-3 p-4 overflow-y-auto">

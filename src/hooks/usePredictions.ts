@@ -123,12 +123,14 @@ export function usePredictions(userId: string | null) {
         for (const b of klineData.bars) closeMap.set(b.date, b.close);
 
         for (const r of recs) {
-          // 找到 baseDate 当天及之后最近一个交易日的收盘价
+          // 找到 baseDate 当天及之后最近一个交易日的K线
           const baseIdx = klineData.bars.findIndex(b => b.date >= r.baseDate);
-          if (baseIdx < 0 || baseIdx + 1 >= klineData.bars.length) continue;
-          // 下一交易日(代表"未来1小时"近似)
-          const nextBar = klineData.bars[baseIdx + 1];
+          if (baseIdx < 0) continue;
           const baseBar = klineData.bars[baseIdx];
+          // 找 baseDate 之后最近一个交易日的收盘价(代表"未来"实际价)
+          // 即使 baseIdx 是最后一天,实际是明天才开盘,我们也不能用今天之后的数据(还没有),跳过
+          if (baseIdx >= klineData.bars.length - 1) continue;
+          const nextBar = klineData.bars[baseIdx + 1];
           const actualClose = nextBar.close;
           const actualChange = (actualClose - baseBar.close) / baseBar.close * 100;
 
