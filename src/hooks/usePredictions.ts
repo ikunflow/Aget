@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { ref, set, query, orderByChild, equalTo, get, onValue } from 'firebase/database';
+import { ref, set, remove, query, orderByChild, equalTo, get, onValue } from 'firebase/database';
 import { db } from '@/lib/firebase';
 import { fetchKline } from '@/utils/api';
 import type { HourPrediction } from '@/utils/hourPredictor';
@@ -167,6 +167,32 @@ export function usePredictions(userId: string | null) {
     }
   }, [userId, records]);
 
+  // 清理超过 maxAgeDays 天的已回填记录
+  const clearOldRecords = useCallback(async (maxAgeDays: number = 30) => {
+    if (!userId) return;
+    const cutoff = Date.now() - maxAgeDays * 24 * 3600 * 1000;
+    const toDelete = records.filter(r => r.resolved && r.predictedAt < cutoff);
+    for (const r of toDelete) {
+      const predRef = ref(db, `users/${userId}/predictions/${r.id}`);
+      await remove(predRef);
+    }
+    return toDelete.length;
+  }, [userId, records]);
+
+  // 清空全部预测记录
+  const clearAllRecords = useCallback(async () => {
+    if (!userId) return;
+    const predRef = ref(db, `users/${userId}/predictions`);
+    await remove(predRef);
+  }, [userId]);
+
+  // 删除单条记录
+  const deleteRecord = useCallback(async (recordId: string) => {
+    if (!userId) return;
+    const predRef = ref(db, `users/${userId}/predictions/${recordId}`);
+    await remove(predRef);
+  }, [userId]);
+
   // 准确率统计
   const stats = {
     total: records.length,
@@ -194,5 +220,5 @@ export function usePredictions(userId: string | null) {
     })(),
   };
 
-  return { records, loading, savePrediction, resolvePending, stats };
+  return { records, loading, savePrediction, resolvePending, clearOldRecords, clearAllRecords, deleteRecord, stats };
 }

@@ -10,7 +10,7 @@ import { Search, Loader2, Clock, TrendingUp, TrendingDown, Activity, Zap, BarCha
 export default function RealtimePredict() {
   const { searchQuery, searchResults, setSearchQuery, selectStock, stockCode, stockName, loading } = useStockStore();
   const { user } = useAuth();
-  const { records, loading: recordsLoading, savePrediction, resolvePending, stats } = usePredictions(user?.uid || null);
+  const { records, loading: recordsLoading, savePrediction, resolvePending, clearOldRecords, clearAllRecords, deleteRecord, stats } = usePredictions(user?.uid || null);
   const [hourPred, setHourPred] = useState<HourPrediction | null>(null);
   const [future3d, setFuture3d] = useState<{ d1: HourPrediction | null; d2: HourPrediction | null; d3: HourPrediction | null }>({ d1: null, d2: null, d3: null });
   const [predicting, setPredicting] = useState(false);
@@ -18,13 +18,16 @@ export default function RealtimePredict() {
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [refreshInterval, setRefreshInterval] = useState(60);
 
-  // 计算 baseDate 之后第 N 个交易日
-  const getTargetDate = (bars: typeof hourPred extends null ? never : any, baseDate: string, daysAhead: number): string => {
-    const baseIdx = bars.findIndex((b: any) => b.date >= baseDate);
-    if (baseIdx < 0) return baseDate;
-    const targetIdx = baseIdx + daysAhead;
-    if (targetIdx >= bars.length) return bars[bars.length - 1].date;
-    return bars[targetIdx].date;
+  // 计算 baseDate 之后第 N 个交易日(跳过周末)
+  const getTargetDate = (_bars: any, baseDate: string, daysAhead: number): string => {
+    const d = new Date(baseDate + 'T00:00:00');
+    let count = 0;
+    while (count < daysAhead) {
+      d.setDate(d.getDate() + 1);
+      const dow = d.getDay();
+      if (dow !== 0 && dow !== 6) count++;
+    }
+    return d.toISOString().slice(0, 10);
   };
 
   const runPrediction = useCallback(async (code: string, name?: string) => {
@@ -331,6 +334,9 @@ export default function RealtimePredict() {
               currentCode={stockCode}
               currentName={stockName}
               onResolve={resolvePending}
+              onClearOld={clearOldRecords}
+              onClearAll={clearAllRecords}
+              onDeleteRecord={deleteRecord}
             />
           )}
         </>
@@ -565,16 +571,20 @@ function AdviceSection({ pred }: { pred: HourPrediction }) {
   );
 }
 
-function AccuracyPanel({ records, stats, loading, currentCode, currentName, onResolve }: {
+function AccuracyPanel({ records, stats, loading, currentCode, currentName, onResolve, onClearOld, onClearAll, onDeleteRecord }: {
   records: any[];
   stats: any;
   loading: boolean;
   currentCode: string;
   currentName: string;
   onResolve: () => Promise<void>;
+  onClearOld: (maxAgeDays?: number) => Promise<number | undefined>;
+  onClearAll: () => Promise<void>;
+  onDeleteRecord: (id: string) => Promise<void>;
 }) {
   const [showAll, setShowAll] = useState(false);
   const [resolving, setResolving] = useState(false);
+  const [clearing, setClearing] = useState(false);
   const accuracyColor = stats.accuracy === null
     ? '#4a6fa5'
     : stats.accuracy >= 0.6 ? '#ff4757'
@@ -589,17 +599,43 @@ function AccuracyPanel({ records, stats, loading, currentCode, currentName, onRe
           <Database size={14} className="text-[#ffd700]" />
           历史预测对比
         </h3>
-        <button
-          onClick={async () => {
-            setResolving(true);
-            try { await onResolve(); } finally { setResolving(false); }
-          }}
-          disabled={resolving || stats.resolved === stats.total}
-          className="flex items-center gap-1 px-2.5 py-1 bg-[#00ff88]/10 border border-[#00ff88]/30 text-[#00ff88] rounded-lg text-xs hover:bg-[#00ff88]/20 disabled:opacity-40"
-        >
-          {resolving ? <Loader2 size={11} className="animate-spin" /> : <History size={11} />}
-          对比历史
-        </button>
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={async () => {
+              if (!confirm('确认清理30天前的已对比记录?')) return;
+              setClearing(true);
+              try { const n = await onClearOld(30); if (n) alert(`已清理 ${n} 条旧记录`); } finally { setClearing(false); }
+            }}
+            disabled={clearing || stats.resolved === 0}
+            className="flex items-center gap-1 px-2 py-1 bg-[#ffd700]/10 border border-[#ffd700]/30 text-[#ffd700] rounded-lg text-[10px] hover:bg-[#ffd700]/20 disabled:opacity-40"
+          >
+            {clearing ? <Loader2 size={10} className="animate-spin" /> : <ShieldAlert size={10} />}
+            清理旧数据
+          </button>
+          <button
+            onClick={async () => {
+              if (!confirm('确认清空全部预测记录?此操作不可恢复!')) return;
+              setClearing(true);
+              try { await onClearAll(); } finally { setClearing(false); }
+            }}
+            disabled={clearing || stats.total === 0}
+            className="flex items-center gap-1 px-2 py-1 bg-[#ff4757]/10 border border-[#ff4757]/30 text-[#ff4757] rounded-lg text-[10px] hover:bg-[#ff4757]/20 disabled:opacity-40"
+          >
+            {clearing ? <Loader2 size={10} className="animate-spin" /> : <AlertCircle size={10} />}
+            清空全部
+          </button>
+          <button
+            onClick={async () => {
+              setResolving(true);
+              try { await onResolve(); } finally { setResolving(false); }
+            }}
+            disabled={resolving || stats.resolved === stats.total}
+            className="flex items-center gap-1 px-2.5 py-1 bg-[#00ff88]/10 border border-[#00ff88]/30 text-[#00ff88] rounded-lg text-xs hover:bg-[#00ff88]/20 disabled:opacity-40"
+          >
+            {resolving ? <Loader2 size={11} className="animate-spin" /> : <History size={11} />}
+            对比历史
+          </button>
+        </div>
       </div>
 
       {loading ? (
@@ -643,6 +679,7 @@ function AccuracyPanel({ records, stats, loading, currentCode, currentName, onRe
                   <th className="text-right py-1.5 font-medium">预测价</th>
                   <th className="text-right py-1.5 font-medium">实际价</th>
                   <th className="text-right py-1.5 font-medium">结果</th>
+                  <th className="text-center py-1.5 font-medium w-6"></th>
                 </tr>
               </thead>
               <tbody>
@@ -656,7 +693,7 @@ function AccuracyPanel({ records, stats, loading, currentCode, currentName, onRe
                     : <span className="text-[#ffd700]">震荡</span>;
                   const dayLabel = `+${r.daysAhead || 1}日`;
                   return (
-                    <tr key={r.id} className="border-b border-[#1e3a5f]/15">
+                    <tr key={r.id} className="border-b border-[#1e3a5f]/15 group">
                       <td className="py-1.5 text-white/80 font-mono">{r.code}</td>
                       <td className="py-1.5 text-[#4a6fa5]">{r.baseDate}</td>
                       <td className="py-1.5 text-[#4a6fa5]">
@@ -668,6 +705,15 @@ function AccuracyPanel({ records, stats, loading, currentCode, currentName, onRe
                         {r.actualClose !== null ? <span className="text-white/80">{r.actualClose.toFixed(2)}</span> : <span className="text-[#4a6fa5]">--</span>}
                       </td>
                       <td className="py-1.5 text-right">{result}</td>
+                      <td className="py-1.5 text-center">
+                        <button
+                          onClick={() => onDeleteRecord(r.id)}
+                          className="opacity-0 group-hover:opacity-100 text-[#4a6fa5] hover:text-[#ff4757] transition-opacity"
+                          title="删除此记录"
+                        >
+                          <X size={12} />
+                        </button>
+                      </td>
                     </tr>
                   );
                 })}

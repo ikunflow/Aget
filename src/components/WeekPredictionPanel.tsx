@@ -49,14 +49,12 @@ export default function WeekPredictionPanel({ prediction, historicalBars, latest
             const avgDaily = prediction.days > 0 ? prediction.expectedReturn / prediction.days : 0;
             // 第一天取全值的1.5倍(短期通常动量较大),后两天日均
             const dayReturns = [
-              { label: '+1日', ret: avgDaily * 1.5 },
-              { label: '+2日', ret: avgDaily * 1.0 },
-              { label: '+3日', ret: avgDaily * 0.7 },
+              { label: '+1日', ret: avgDaily * 1.5, daysAhead: 1 },
+              { label: '+2日', ret: avgDaily * 1.0, daysAhead: 2 },
+              { label: '+3日', ret: avgDaily * 0.7, daysAhead: 3 },
             ];
-            return dayReturns.map((row, i) => {
-              const targetDate = new Date(latestDate);
-              targetDate.setDate(targetDate.getDate() + i + 1);
-              const dateStr = targetDate.toISOString().slice(0, 10);
+            return dayReturns.map((row) => {
+              const dateStr = getNextTradingDay(latestDate, row.daysAhead);
               const color = row.ret > 0.05 ? '#ff4757' : row.ret < -0.05 ? '#00ff88' : '#ffd700';
               return (
                 <div key={row.label} className="bg-[#0a0e27]/60 rounded-lg p-2 text-center">
@@ -398,4 +396,16 @@ function FactorBar({ label, weight }: { label: string; weight: number }) {
       </div>
     </div>
   );
+}
+
+// 计算 baseDate 之后第 N 个交易日(跳过周末)
+function getNextTradingDay(baseDate: string, daysAhead: number): string {
+  const d = new Date(baseDate + 'T00:00:00');
+  let count = 0;
+  while (count < daysAhead) {
+    d.setDate(d.getDate() + 1);
+    const dow = d.getDay();
+    if (dow !== 0 && dow !== 6) count++;
+  }
+  return d.toISOString().slice(0, 10);
 }
