@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import type { WeekPrediction, DailyBar, PredictionHorizon } from '@/utils/types';
-import { TrendingUp, TrendingDown, Activity, Target, Shield, Calendar, Coins, Zap, BarChart3, FlaskConical, AlertCircle } from 'lucide-react';
+import { TrendingUp, TrendingDown, Activity, Target, Shield, Calendar, Coins, Zap, BarChart3, FlaskConical, AlertCircle, Sun } from 'lucide-react';
 
 interface Props {
   prediction: WeekPrediction | null;
@@ -14,7 +14,6 @@ export default function WeekPredictionPanel({ prediction, historicalBars, latest
   if (!prediction || historicalBars.length < 30) {
     return (
       <div className="space-y-3">
-        <HorizonSwitch horizon={horizon} onHorizonChange={onHorizonChange} />
         <div className="bg-[#0d1333]/60 border border-[#1e3a5f]/30 rounded-xl p-4 text-center">
           <AlertCircle size={24} className="text-[#ffd700] mx-auto mb-2" />
           <p className="text-[#4a6fa5] text-xs">K线数据不足(需要至少30个交易日)</p>
@@ -27,10 +26,40 @@ export default function WeekPredictionPanel({ prediction, historicalBars, latest
   const direction = prediction.upProbability > prediction.downProbability + 0.05 ? 'up' :
                     prediction.downProbability > prediction.upProbability + 0.05 ? 'down' : 'flat';
   const mainProb = Math.round(Math.max(prediction.upProbability, prediction.downProbability, prediction.flatProbability) * 100);
+  const day1Backtest = prediction.backtest.horizons.find(h => h.days === 1);
 
   return (
     <div className="space-y-3">
-      <HorizonSwitch horizon={horizon} onHorizonChange={onHorizonChange} />
+      {/* 顶部醒目: 明日预测大卡片 */}
+      <TomorrowCard
+        prediction={prediction}
+        currentPrice={lastClose}
+        day1Backtest={day1Backtest}
+      />
+
+      {/* 短期/长期切换 */}
+      <div className="flex gap-1.5 bg-[#0a0e27]/60 border border-[#1e3a5f]/30 rounded-xl p-1">
+        <button
+          onClick={() => onHorizonChange('short')}
+          className={`flex-1 flex items-center justify-center gap-1 py-2 rounded-lg text-xs font-bold transition-all ${
+            horizon === 'short'
+              ? 'bg-gradient-to-r from-[#00ff88] to-[#1e90ff] text-[#0a0e27]'
+              : 'text-[#4a6fa5] hover:text-white/70'
+          }`}
+        >
+          <Zap size={12} />短期 (5天)
+        </button>
+        <button
+          onClick={() => onHorizonChange('long')}
+          className={`flex-1 flex items-center justify-center gap-1 py-2 rounded-lg text-xs font-bold transition-all ${
+            horizon === 'long'
+              ? 'bg-gradient-to-r from-[#ffd700] to-[#ff6b9d] text-[#0a0e27]'
+              : 'text-[#4a6fa5] hover:text-white/70'
+          }`}
+        >
+          <Calendar size={12} />长期 (20天)
+        </button>
+      </div>
 
       {/* 核心: 方向概率 */}
       <div className="bg-[#0d1333]/60 border border-[#1e3a5f]/30 rounded-xl p-3">
@@ -151,10 +180,10 @@ export default function WeekPredictionPanel({ prediction, historicalBars, latest
           因子与权重(网格搜索最优)
         </h3>
         <div className="space-y-1.5">
-          <FactorBar label="技术指标" score={prediction.score} weight={prediction.weights.technical} subScore={50} />
-          <FactorBar label="短期动量" score={prediction.score} weight={prediction.weights.momentum} subScore={50} />
-          <FactorBar label="趋势强度" score={prediction.score} weight={prediction.weights.trend} subScore={50} />
-          <FactorBar label="历史模式" score={prediction.score} weight={prediction.weights.pattern} subScore={50} />
+          <FactorBar label="技术指标" weight={prediction.weights.technical} />
+          <FactorBar label="短期动量" weight={prediction.weights.momentum} />
+          <FactorBar label="趋势强度" weight={prediction.weights.trend} />
+          <FactorBar label="历史模式" weight={prediction.weights.pattern} />
         </div>
         {prediction.weightAccuracy > 0 && (
           <p className="text-[10px] text-[#4a6fa5] mt-2 pt-2 border-t border-[#1e3a5f]/20">
@@ -172,29 +201,94 @@ export default function WeekPredictionPanel({ prediction, historicalBars, latest
   );
 }
 
-function HorizonSwitch({ horizon, onHorizonChange }: { horizon: PredictionHorizon; onHorizonChange: (h: PredictionHorizon) => void }) {
+// 明日预测大卡片
+function TomorrowCard({ prediction, currentPrice, day1Backtest }: {
+  prediction: WeekPrediction;
+  currentPrice: number;
+  day1Backtest?: { days: number; accuracy: number; sampleSize: number };
+}) {
+  const direction = prediction.upProbability > prediction.downProbability + 0.05 ? 'up' :
+                    prediction.downProbability > prediction.upProbability + 0.05 ? 'down' : 'flat';
+  const mainProb = Math.max(prediction.upProbability, prediction.downProbability, prediction.flatProbability);
+  const mainProbPct = Math.round(mainProb * 100);
+  const expRet = prediction.expectedReturn;
+  const isUp = expRet > 0.05;
+  const isDown = expRet < -0.05;
+  const dirColor = isUp ? '#ff4757' : isDown ? '#00ff88' : '#ffd700';
+  const bgGradient = isUp
+    ? 'from-[#ff4757]/15 via-[#0d1333]/80 to-[#0d1333]/60'
+    : isDown
+    ? 'from-[#00ff88]/15 via-[#0d1333]/80 to-[#0d1333]/60'
+    : 'from-[#ffd700]/10 via-[#0d1333]/80 to-[#0d1333]/60';
+
+  const dirLabel = direction === 'up' ? '看涨' : direction === 'down' ? '看跌' : '震荡';
+  const Icon = direction === 'up' ? TrendingUp : direction === 'down' ? TrendingDown : Activity;
+
+  // 预测明日收盘价
+  const predictedPrice = currentPrice * (1 + expRet / 100);
+  const predictedMove = predictedPrice - currentPrice;
+
   return (
-    <div className="flex gap-1.5 bg-[#0a0e27]/60 border border-[#1e3a5f]/30 rounded-xl p-1">
-      <button
-        onClick={() => onHorizonChange('short')}
-        className={`flex-1 flex items-center justify-center gap-1 py-2 rounded-lg text-xs font-bold transition-all ${
-          horizon === 'short'
-            ? 'bg-gradient-to-r from-[#00ff88] to-[#1e90ff] text-[#0a0e27]'
-            : 'text-[#4a6fa5] hover:text-white/70'
-        }`}
-      >
-        <Zap size={12} />短期 (5天)
-      </button>
-      <button
-        onClick={() => onHorizonChange('long')}
-        className={`flex-1 flex items-center justify-center gap-1 py-2 rounded-lg text-xs font-bold transition-all ${
-          horizon === 'long'
-            ? 'bg-gradient-to-r from-[#ffd700] to-[#ff6b9d] text-[#0a0e27]'
-            : 'text-[#4a6fa5] hover:text-white/70'
-        }`}
-      >
-        <Calendar size={12} />长期 (20天)
-      </button>
+    <div className={`bg-gradient-to-br ${bgGradient} border-2 rounded-2xl p-4 relative overflow-hidden`} style={{ borderColor: `${dirColor}40` }}>
+      <div className="absolute top-0 right-0 w-32 h-32 rounded-full opacity-10 blur-2xl" style={{ background: dirColor }} />
+      <div className="relative">
+        <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center gap-1.5">
+            <Sun size={14} style={{ color: dirColor }} />
+            <h3 className="text-white text-sm font-bold">明日预测</h3>
+            <span className="text-[10px] text-[#4a6fa5] px-1.5 py-0.5 rounded bg-[#0a0e27]/60">1日</span>
+          </div>
+          {day1Backtest && day1Backtest.sampleSize > 0 && (
+            <span className="text-[10px] text-[#4a6fa5]">
+              历史准确率 <span className="font-mono font-bold" style={{ color: dirColor }}>{(day1Backtest.accuracy * 100).toFixed(1)}%</span>
+            </span>
+          )}
+        </div>
+
+        <div className="flex items-end gap-3 mb-3">
+          <Icon size={32} style={{ color: dirColor }} />
+          <div>
+            <div className="font-mono font-bold text-3xl md:text-4xl leading-none" style={{ color: dirColor }}>
+              {expRet >= 0 ? '+' : ''}{expRet.toFixed(2)}%
+            </div>
+            <div className="text-[11px] text-[#4a6fa5] mt-0.5">预计明日涨幅</div>
+          </div>
+          <div className="ml-auto text-right">
+            <div className="text-[10px] text-[#4a6fa5]">预计明日收盘</div>
+            <div className="font-mono font-bold text-base" style={{ color: dirColor }}>
+              {predictedPrice.toFixed(2)}
+            </div>
+            <div className="text-[10px]" style={{ color: dirColor }}>
+              {predictedMove >= 0 ? '+' : ''}{predictedMove.toFixed(2)}
+            </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-3 gap-2">
+          <div className="bg-[#0a0e27]/60 rounded-lg p-2 text-center">
+            <div className="text-[10px] text-[#4a6fa5]">{dirLabel}概率</div>
+            <div className="font-mono font-bold text-sm" style={{ color: dirColor }}>{mainProbPct}%</div>
+          </div>
+          <div className="bg-[#0a0e27]/60 rounded-lg p-2 text-center">
+            <div className="text-[10px] text-[#4a6fa5]">80%区间</div>
+            <div className="font-mono font-bold text-[10px] mt-0.5" style={{ color: dirColor }}>
+              [{prediction.ci80Lower.toFixed(1)}, {prediction.ci80Upper.toFixed(1)}]%
+            </div>
+          </div>
+          <div className="bg-[#0a0e27]/60 rounded-lg p-2 text-center">
+            <div className="text-[10px] text-[#4a6fa5]">样本数</div>
+            <div className="font-mono font-bold text-sm" style={{ color: dirColor }}>{prediction.matchSampleSize}</div>
+          </div>
+        </div>
+
+        <div className="mt-3 pt-3 border-t border-[#1e3a5f]/30 text-[10px] text-[#4a6fa5]">
+          方向概率: <span className="text-[#ff4757] font-mono">↑ {(prediction.upProbability * 100).toFixed(0)}%</span>
+          {' · '}
+          <span className="text-[#00ff88] font-mono">↓ {(prediction.downProbability * 100).toFixed(0)}%</span>
+          {' · '}
+          <span className="text-[#ffd700] font-mono">→ {(prediction.flatProbability * 100).toFixed(0)}%</span>
+        </div>
+      </div>
     </div>
   );
 }
@@ -251,7 +345,7 @@ function DataCard({ label, value, color }: { label: string; value: string; color
   );
 }
 
-function FactorBar({ label, weight, subScore }: { label: string; score: number; weight: number; subScore: number }) {
+function FactorBar({ label, weight }: { label: string; weight: number }) {
   return (
     <div className="flex items-center justify-between text-xs">
       <span className="text-[#4a6fa5] flex-1">{label}</span>

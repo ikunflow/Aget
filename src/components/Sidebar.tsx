@@ -1,11 +1,10 @@
 import { NavLink } from 'react-router-dom';
-import { BarChart3, Brain, Briefcase, TrendingUp, LogIn, LogOut, User, Clock } from 'lucide-react';
+import { BarChart3, Briefcase, TrendingUp, LogIn, LogOut, User, Clock } from 'lucide-react';
 import { useAuth } from '@/hooks/useAuth';
 
 const navItems = [
   { to: '/', icon: BarChart3, label: '行情' },
   { to: '/realtime', icon: Clock, label: '实时' },
-  { to: '/quant', icon: Brain, label: '量化' },
   { to: '/portfolio', icon: Briefcase, label: '持仓', requireAuth: true },
 ];
 
@@ -23,7 +22,7 @@ export default function Sidebar({ onLoginClick }: { onLoginClick: () => void }) 
               <TrendingUp size={20} className="text-[#0a0e27]" />
             </div>
             <div className="hidden lg:block">
-              <h1 className="text-white font-bold text-sm leading-tight">A股量化</h1>
+              <h1 className="text-white font-bold text-sm leading-tight">A股预测</h1>
               <p className="text-[#4a6fa5] text-xs">交易预测工具</p>
             </div>
           </div>

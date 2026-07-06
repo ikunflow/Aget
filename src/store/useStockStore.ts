@@ -1,10 +1,9 @@
 import { create } from 'zustand';
-import type { DailyBar, IndicatorData, PredictionResult, BacktestResult, WeekPrediction, InstrumentType, PredictionHorizon } from '@/utils/types';
+import type { DailyBar, IndicatorData, PredictionResult, WeekPrediction, InstrumentType, PredictionHorizon } from '@/utils/types';
 import { generateStockData, searchStocks as searchLocal, ALL_LIST } from '@/utils/stockData';
 import { calcAllIndicators } from '@/utils/indicators';
 import { predict } from '@/utils/predictor';
 import { predictWeek } from '@/utils/weekPredictor';
-import { backtestStrategy } from '@/utils/strategies';
 import { fetchKline, searchStocksAPI, fetchMarketHeat } from '@/utils/api';
 
 interface StockState {
@@ -15,8 +14,6 @@ interface StockState {
   indicators: IndicatorData | null;
   prediction: PredictionResult | null;
   weekPrediction: WeekPrediction | null;
-  backtest: BacktestResult | null;
-  activeStrategy: string;
   horizon: PredictionHorizon;
   searchQuery: string;
   searchResults: { code: string; name: string; type?: string }[];
@@ -27,7 +24,6 @@ interface StockState {
   setStockCode: (code: string) => void;
   setSearchQuery: (query: string) => void;
   selectStock: (code: string, name?: string, type?: InstrumentType) => void;
-  setActiveStrategy: (id: string) => void;
   setUseRealData: (v: boolean) => void;
   setHorizon: (h: PredictionHorizon) => void;
 }
@@ -43,7 +39,6 @@ export const useStockStore = create<StockState>((set, get) => ({
   prediction: null,
   weekPrediction: null,
   backtest: null,
-  activeStrategy: 'multi_factor',
   horizon: 'short',
   searchQuery: '',
   searchResults: [],
@@ -83,7 +78,7 @@ export const useStockStore = create<StockState>((set, get) => ({
   },
 
   selectStock: async (code: string, name?: string, type?: InstrumentType) => {
-    const { useRealData, activeStrategy, horizon } = get();
+    const { useRealData, horizon } = get();
     set({ loading: true, error: null });
 
     try {
@@ -110,7 +105,6 @@ export const useStockStore = create<StockState>((set, get) => ({
 
       const indicators = calcAllIndicators(bars);
       const predictionResult = predict(bars, indicators);
-      const backtest = backtestStrategy(activeStrategy, bars, indicators);
 
       let marketHeat = 50;
       let marketLabel = '温和';
@@ -131,7 +125,6 @@ export const useStockStore = create<StockState>((set, get) => ({
         prediction: predictionResult,
         weekPrediction: weekPred,
         horizon,
-        backtest,
         searchQuery: `${code} ${stockName}`,
         searchResults: [],
         loading: false,
@@ -145,7 +138,6 @@ export const useStockStore = create<StockState>((set, get) => ({
       if (bars.length > 0) {
         const indicators = calcAllIndicators(bars);
         const predictionResult = predict(bars, indicators);
-        const backtest = backtestStrategy(activeStrategy, bars, indicators);
         const weekPred = await predictWeek(code, bars, indicators, 50, '温和', horizon);
         set({
           stockCode: code,
@@ -156,7 +148,6 @@ export const useStockStore = create<StockState>((set, get) => ({
           prediction: predictionResult,
           weekPrediction: weekPred,
           horizon,
-          backtest,
           searchQuery: `${code} ${stockName}`,
           searchResults: [],
           loading: false,
@@ -169,16 +160,6 @@ export const useStockStore = create<StockState>((set, get) => ({
         });
       }
     }
-  },
-
-  setActiveStrategy: (id: string) => {
-    const { bars, indicators } = get();
-    if (!indicators || bars.length === 0) {
-      set({ activeStrategy: id });
-      return;
-    }
-    const backtest = backtestStrategy(id, bars, indicators);
-    set({ activeStrategy: id, backtest });
   },
 
   setHorizon: (h: PredictionHorizon) => {

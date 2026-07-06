@@ -34,7 +34,7 @@ export interface PredictionResult {
   score: number;
 }
 
-export type PredictionHorizon = 'short' | 'long';
+export type PredictionHorizon = 'short' | 'long' | 'tomorrow';
 
 export interface WeekPrediction {
   horizon: PredictionHorizon;

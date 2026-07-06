@@ -3,7 +3,6 @@ import { useState } from "react";
 import Sidebar from "@/components/Sidebar";
 import AuthDialog from "@/components/AuthDialog";
 import Analysis from "@/pages/Analysis";
-import Quant from "@/pages/Quant";
 import Portfolio from "@/pages/Portfolio";
 import RealtimePredict from "@/pages/RealtimePredict";
 import { useAuth } from "@/hooks/useAuth";
@@ -20,7 +19,6 @@ export default function App() {
           <Routes>
             <Route path="/" element={<Analysis />} />
             <Route path="/realtime" element={<RealtimePredict />} />
-            <Route path="/quant" element={<Quant />} />
             <Route
               path="/portfolio"
               element={

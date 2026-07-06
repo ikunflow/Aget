@@ -46,7 +46,7 @@ export async function predictWeek(
   horizon: PredictionHorizon = 'short',
 ): Promise<WeekPrediction> {
   const len = bars.length;
-  const days = horizon === 'short' ? 5 : 20;
+  const days = horizon === 'short' ? 5 : horizon === 'long' ? 20 : 1;
 
   if (len < 30) {
     return defaultPrediction(code, bars, marketHeat, marketLabel, horizon, days, DEFAULT_WEIGHTS);
@@ -110,8 +110,10 @@ export async function predictWeek(
   if (matches.length >= 5) {
     const returns = matches.map(m => m.returnPct);
     expectedReturn = returns.reduce((s, v) => s + v, 0) / returns.length;
-    const upCount = returns.filter(r => r > 0.5).length;
-    const downCount = returns.filter(r => r < -0.5).length;
+    // 涨跌幅阈值按 days 自适应(days=1 用 0.2%, days=5 用 0.5%, days=20 用 1%)
+    const moveThresh = days === 1 ? 0.2 : days === 5 ? 0.5 : 1.0;
+    const upCount = returns.filter(r => r > moveThresh).length;
+    const downCount = returns.filter(r => r < -moveThresh).length;
     const flatCount = returns.length - upCount - downCount;
     upProb = upCount / returns.length;
     downProb = downCount / returns.length;
@@ -122,9 +124,10 @@ export async function predictWeek(
     // 样本不足时,弱信号
     if (combinedScore > 60) { upProb = 0.50; downProb = 0.25; flatProb = 0.25; }
     else if (combinedScore < 40) { upProb = 0.25; downProb = 0.50; flatProb = 0.25; }
-    expectedReturn = (combinedScore - 50) / 50 * (days === 5 ? 2 : 5);
-    ci80 = [expectedReturn - 3, expectedReturn + 3];
-    ci95 = [expectedReturn - 6, expectedReturn + 6];
+    const baseMove = days === 1 ? 0.6 : days === 5 ? 2 : 5;
+    expectedReturn = (combinedScore - 50) / 50 * baseMove;
+    ci80 = [expectedReturn - days * 0.6, expectedReturn + days * 0.6];
+    ci95 = [expectedReturn - days * 1.2, expectedReturn + days * 1.2];
   }
 
   // === 5. 模型自身回测 ===
