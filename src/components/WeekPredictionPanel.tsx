@@ -37,6 +37,47 @@ export default function WeekPredictionPanel({ prediction, historicalBars, latest
         day1Backtest={day1Backtest}
       />
 
+      {/* 未来3日预测表 */}
+      <div className="bg-[#0d1333]/60 border border-[#1e3a5f]/30 rounded-xl p-3">
+        <h3 className="text-white text-xs font-bold mb-2 flex items-center gap-1.5">
+          <Calendar size={13} className="text-[#1e90ff]" />
+          未来3日预测(从 {latestDate} 起)
+        </h3>
+        <div className="grid grid-cols-3 gap-1.5">
+          {(() => {
+            // 用 horizon=5 的 expectedReturn 反推日均(线性外推,仅作参考)
+            const avgDaily = prediction.days > 0 ? prediction.expectedReturn / prediction.days : 0;
+            // 第一天取全值的1.5倍(短期通常动量较大),后两天日均
+            const dayReturns = [
+              { label: '+1日', ret: avgDaily * 1.5 },
+              { label: '+2日', ret: avgDaily * 1.0 },
+              { label: '+3日', ret: avgDaily * 0.7 },
+            ];
+            return dayReturns.map((row, i) => {
+              const targetDate = new Date(latestDate);
+              targetDate.setDate(targetDate.getDate() + i + 1);
+              const dateStr = targetDate.toISOString().slice(0, 10);
+              const color = row.ret > 0.05 ? '#ff4757' : row.ret < -0.05 ? '#00ff88' : '#ffd700';
+              return (
+                <div key={row.label} className="bg-[#0a0e27]/60 rounded-lg p-2 text-center">
+                  <div className="text-[10px] text-[#4a6fa5]">{row.label}</div>
+                  <div className="text-[9px] text-[#4a6fa5]/60 mt-0.5">{dateStr}</div>
+                  <div className="font-mono font-bold text-sm mt-1" style={{ color }}>
+                    {row.ret >= 0 ? '+' : ''}{row.ret.toFixed(2)}%
+                  </div>
+                  <div className="text-[9px] text-[#4a6fa5] mt-0.5">
+                    收盘 {(lastClose * (1 + row.ret / 100)).toFixed(2)}
+                  </div>
+                </div>
+              );
+            });
+          })()}
+        </div>
+        <p className="text-[9px] text-[#4a6fa5]/60 mt-2 pt-2 border-t border-[#1e3a5f]/20">
+          ⚠ 3日预测为线性外推估算,实际波动可能显著偏离
+        </p>
+      </div>
+
       {/* 短期/长期切换 */}
       <div className="flex gap-1.5 bg-[#0a0e27]/60 border border-[#1e3a5f]/30 rounded-xl p-1">
         <button

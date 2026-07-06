@@ -4,7 +4,7 @@ import { db } from '@/lib/firebase';
 import { fetchKline } from '@/utils/api';
 import type { HourPrediction } from '@/utils/hourPredictor';
 
-// 预测记录(写入数据库)
+// 预测记录(写入数据库) - 支持未来3天
 export interface PredictionRecord {
   id: string;
   code: string;
@@ -12,7 +12,10 @@ export interface PredictionRecord {
   predictedAt: number;      // 预测时间戳(ms)
   baseDate: string;          // 基于哪一天的K线预测(YYYY-MM-DD)
   basePrice: number;         // 预测时的现价
-  predictedClose: number;    // 1小时预测价
+  // 多日预测:daysAhead=1/2/3(明日/后日/大后日)
+  daysAhead: number;         // 预测未来第几天(1=明日, 2=后日, 3=大后日)
+  targetDate: string;        // 目标预测日(数据库后填 = baseDate后第N个交易日)
+  predictedClose: number;    // 预测的N日后收盘价
   predictedChange: number;   // 预测涨跌幅(%)
   direction: 'up' | 'down' | 'flat';
   score: number;
@@ -43,6 +46,8 @@ export function usePredictions(userId: string | null) {
           id: key,
           code: val.code,
           name: val.name,
+          daysAhead: val.daysAhead ?? 1,        // 兼容旧记录(无 daysAhead 字段)
+          targetDate: val.targetDate ?? val.baseDate,  // 兼容旧记录
           predictedAt: val.predictedAt,
           baseDate: val.baseDate,
           basePrice: val.basePrice,
@@ -67,41 +72,46 @@ export function usePredictions(userId: string | null) {
     return () => unsub();
   }, [userId]);
 
-  // 保存新预测到数据库(使用 baseDate+code+predictedAt 作为幂等键避免重复)
+  // 保存未来多天(1/2/3日)预测到数据库
+  // daysPreds: [{ daysAhead, targetDate, predictedClose, predictedChange, direction, score, confidence }]
   const savePrediction = useCallback(async (
-    pred: any,
+    daysPreds: { daysAhead: number; targetDate: string; pred: any }[],
     code: string,
     name: string,
     baseDate: string,
     basePrice: number
   ) => {
     if (!userId) return;
-    // 幂等键:同一只股票同一天只保留一条预测快照
-    const idKey = `${code}_${baseDate}`;
-    const predRef = ref(db, `users/${userId}/predictions/${idKey}`);
-    const record = {
-      code,
-      name,
-      predictedAt: Date.now(),
-      baseDate,
-      basePrice,
-      predictedClose: pred.predictedClose,
-      predictedChange: pred.expectedChange,
-      direction: pred.direction,
-      score: pred.score,
-      confidence: pred.confidence,
-      actualClose: null,
-      actualChange: null,
-      isCorrect: null,
-      resolved: false,
-    };
-    await set(predRef, record);
+    const now = Date.now();
+    for (const { daysAhead, targetDate, pred } of daysPreds) {
+      // 幂等键:同一只股票同一天+同一daysAhead 只保留一条
+      const idKey = `${code}_${baseDate}_d${daysAhead}`;
+      const predRef = ref(db, `users/${userId}/predictions/${idKey}`);
+      const record: PredictionRecord = {
+        id: idKey,
+        code,
+        name,
+        predictedAt: now,
+        baseDate,
+        basePrice,
+        daysAhead,
+        targetDate,
+        predictedClose: pred.predictedClose,
+        predictedChange: pred.expectedChange,
+        direction: pred.direction,
+        score: pred.score,
+        confidence: pred.confidence,
+        actualClose: null,
+        actualChange: null,
+        isCorrect: null,
+        resolved: false,
+      };
+      await set(predRef, record);
+    }
   }, [userId]);
 
   // 拉取指定股票某天的实际收盘价,并回填数据库
-  // 用于"已过完的预测日":baseDate 那天之后的实际收盘价才能对比
-  // 由于小时级预测的方向是基于"未来1小时",我们用下一交易日的开盘价作为实际方向基准
-  // (或者用当天K线最后5分钟的均价,这里简化为:以"实际方向"为参考)
+  // daysAhead=1 用 baseDate 之后第1个交易日, =2 用第2个, =3 用第3个
   const resolvePending = useCallback(async () => {
     if (!userId) return;
     const pending = records.filter(r => !r.resolved);
@@ -118,20 +128,18 @@ export function usePredictions(userId: string | null) {
       try {
         const klineData = await fetchKline(code, 60);
         if (klineData.bars.length === 0) continue;
-        // 构造 date->close 的映射
-        const closeMap = new Map<string, number>();
-        for (const b of klineData.bars) closeMap.set(b.date, b.close);
 
         for (const r of recs) {
           // 找到 baseDate 当天及之后最近一个交易日的K线
           const baseIdx = klineData.bars.findIndex(b => b.date >= r.baseDate);
           if (baseIdx < 0) continue;
           const baseBar = klineData.bars[baseIdx];
-          // 找 baseDate 之后最近一个交易日的收盘价(代表"未来"实际价)
-          // 即使 baseIdx 是最后一天,实际是明天才开盘,我们也不能用今天之后的数据(还没有),跳过
-          if (baseIdx >= klineData.bars.length - 1) continue;
-          const nextBar = klineData.bars[baseIdx + 1];
-          const actualClose = nextBar.close;
+          // 找 baseDate 之后第 daysAhead 个交易日
+          const targetIdx = baseIdx + (r.daysAhead || 1);
+          // 还没到时间就跳过
+          if (targetIdx >= klineData.bars.length) continue;
+          const targetBar = klineData.bars[targetIdx];
+          const actualClose = targetBar.close;
           const actualChange = (actualClose - baseBar.close) / baseBar.close * 100;
 
           // 方向对比

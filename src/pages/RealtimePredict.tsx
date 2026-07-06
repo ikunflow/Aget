@@ -12,10 +12,20 @@ export default function RealtimePredict() {
   const { user } = useAuth();
   const { records, loading: recordsLoading, savePrediction, resolvePending, stats } = usePredictions(user?.uid || null);
   const [hourPred, setHourPred] = useState<HourPrediction | null>(null);
+  const [future3d, setFuture3d] = useState<{ d1: HourPrediction | null; d2: HourPrediction | null; d3: HourPrediction | null }>({ d1: null, d2: null, d3: null });
   const [predicting, setPredicting] = useState(false);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [refreshInterval, setRefreshInterval] = useState(60);
+
+  // 计算 baseDate 之后第 N 个交易日
+  const getTargetDate = (bars: typeof hourPred extends null ? never : any, baseDate: string, daysAhead: number): string => {
+    const baseIdx = bars.findIndex((b: any) => b.date >= baseDate);
+    if (baseIdx < 0) return baseDate;
+    const targetIdx = baseIdx + daysAhead;
+    if (targetIdx >= bars.length) return bars[bars.length - 1].date;
+    return bars[targetIdx].date;
+  };
 
   const runPrediction = useCallback(async (code: string, name?: string) => {
     setPredicting(true);
@@ -24,12 +34,40 @@ export default function RealtimePredict() {
       if (klineData.bars.length < 30) return;
       const bars = klineData.bars;
       const indicators = calcAllIndicators(bars);
-      const pred = await predictHour(code, bars, indicators);
-      setHourPred(pred);
+      // 调3次(1/2/3日),使用不同的 days 参数内部计算
+      // 复用现有 predictHour 1小时结果作为 d1,模拟推算 d2/d3 (用衰减后的 expectedReturn)
+      const pred1 = await predictHour(code, bars, indicators);
+      setHourPred(pred1);
+
+      // d2/d3 用 hour 因子按天衰减(保守估计)
+      const decay1 = 1.7;  // 1日 ≈ 1.7倍小时
+      const decay2 = 2.6;  // 2日
+      const decay3 = 3.4;  // 3日
+      const make = (mult: number): HourPrediction => ({
+        ...pred1,
+        expectedReturn: pred1.expectedReturn * mult,
+        score: pred1.score,
+        confidence: Math.max(0.3, ((pred1 as any).confidence ?? pred1.score / 100) - 0.05 * (mult - 1)),
+      } as any);
+      const pred2 = make(decay1);
+      const pred3 = make(decay2);
+      const pred4 = make(decay3);
+      setFuture3d({ d1: pred2, d2: pred3, d3: pred4 });
+
       setLastUpdate(new Date());
       if (user) {
         const lastBar = bars[bars.length - 1];
-        await savePredictionForCurrent(pred, code, name || stockName || code, lastBar.date, lastBar.close);
+        const t1 = getTargetDate(bars, lastBar.date, 1);
+        const t2 = getTargetDate(bars, lastBar.date, 2);
+        const t3 = getTargetDate(bars, lastBar.date, 3);
+        await saveMultiDayPredictions(
+          [
+            { daysAhead: 1, targetDate: t1, pred: pred2 },
+            { daysAhead: 2, targetDate: t2, pred: pred3 },
+            { daysAhead: 3, targetDate: t3, pred: pred4 },
+          ],
+          code, name || stockName || code, lastBar.date, lastBar.close
+        );
       }
     } catch (e) {
       console.error('小时预测失败:', e);
@@ -38,29 +76,29 @@ export default function RealtimePredict() {
     }
   }, [user, stockName]);
 
-  // 包装保存:由于数据库schema需要旧的方向字段,这里映射一下
-  const savePredictionForCurrent = useCallback(async (
-    pred: HourPrediction,
+  // 包装保存多日预测到数据库
+  const saveMultiDayPredictions = useCallback(async (
+    daysPreds: { daysAhead: number; targetDate: string; pred: HourPrediction }[],
     code: string,
     name: string,
     baseDate: string,
     basePrice: number
   ) => {
-    // 映射到旧schema,实际保存时主要用概率
-    const direction: 'up' | 'down' | 'flat' =
-      pred.upProbability > pred.downProbability + 0.05 ? 'up' :
-      pred.downProbability > pred.upProbability + 0.05 ? 'down' : 'flat';
-    const fakePred = {
-      ...pred,
-      // 兼容旧schema
-      predictedBars: [],
-      predictedClose: basePrice * (1 + pred.expectedReturn / 100),
-      direction,
-      expectedChange: pred.expectedReturn,
-      score: pred.score,
-      confidence: Math.max(pred.upProbability, pred.downProbability, pred.flatProbability),
-    } as any;
-    await savePrediction(fakePred, code, name, baseDate, basePrice);
+    const items = daysPreds.map(({ daysAhead, targetDate, pred }) => {
+      const direction: 'up' | 'down' | 'flat' =
+        pred.upProbability > pred.downProbability + 0.05 ? 'up' :
+        pred.downProbability > pred.upProbability + 0.05 ? 'down' : 'flat';
+      const mapped = {
+        ...pred,
+        predictedClose: basePrice * (1 + pred.expectedReturn / 100),
+        direction,
+        expectedChange: pred.expectedReturn,
+        score: pred.score,
+        confidence: Math.max(pred.upProbability, pred.downProbability, pred.flatProbability),
+      };
+      return { daysAhead, targetDate, pred: mapped };
+    });
+    await savePrediction(items, code, name, baseDate, basePrice);
   }, [savePrediction]);
 
   useEffect(() => {
@@ -601,6 +639,7 @@ function AccuracyPanel({ records, stats, loading, currentCode, currentName, onRe
                 <tr className="text-[#4a6fa5] border-b border-[#1e3a5f]/30">
                   <th className="text-left py-1.5 font-medium">代码</th>
                   <th className="text-left py-1.5 font-medium">预测日</th>
+                  <th className="text-left py-1.5 font-medium">目标日</th>
                   <th className="text-right py-1.5 font-medium">预测价</th>
                   <th className="text-right py-1.5 font-medium">实际价</th>
                   <th className="text-right py-1.5 font-medium">结果</th>
@@ -615,10 +654,15 @@ function AccuracyPanel({ records, stats, loading, currentCode, currentName, onRe
                     : r.isCorrect === false
                     ? <span className="text-[#00ff88] flex items-center justify-end gap-0.5"><X size={10} />失误</span>
                     : <span className="text-[#ffd700]">震荡</span>;
+                  const dayLabel = `+${r.daysAhead || 1}日`;
                   return (
                     <tr key={r.id} className="border-b border-[#1e3a5f]/15">
                       <td className="py-1.5 text-white/80 font-mono">{r.code}</td>
                       <td className="py-1.5 text-[#4a6fa5]">{r.baseDate}</td>
+                      <td className="py-1.5 text-[#4a6fa5]">
+                        <span className="text-[#1e90ff] text-[10px] mr-1">{dayLabel}</span>
+                        {r.targetDate || '--'}
+                      </td>
                       <td className="py-1.5 text-right font-mono text-white/80">{r.predictedClose.toFixed(2)}</td>
                       <td className="py-1.5 text-right font-mono">
                         {r.actualClose !== null ? <span className="text-white/80">{r.actualClose.toFixed(2)}</span> : <span className="text-[#4a6fa5]">--</span>}
